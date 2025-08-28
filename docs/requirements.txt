@@ -1,0 +1,7 @@
+mipcandy
+myst_parser
+sphinx-autodoc2
+sphinx-book-theme
+sphinx-copybutton
+sphinx-design
+linkify-it-py
