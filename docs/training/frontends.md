@@ -10,7 +10,7 @@ In your duplication, click "..." -> "Copy Link" in the top right corner. You wil
 "https://www.notion.so/{DATABASE_ID}?v={VIEW_ID}".
 
 Click "..." -> "Connections" -> "Develop Integration" in the top right corner. Create a new integration. After created,
-copy the "Integration Secret". This is your `API_KEY`.
+copy the "Integration Secret". This is your `API_KEY`. In the access tab, select your database.
 
 ```shell
 mipcandy -c secret -kv notion_api_key {API_KEY} -kv notion_database_id {DATABASE_ID}
