@@ -49,6 +49,7 @@ layer.md
 :glob:
 :caption: 🐎 Training
 training/index.md
+training/frontends.md
 ```
 
 ```{toctree}
