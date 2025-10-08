@@ -27,14 +27,13 @@ pip install "mipcandy[all]"
 from mipcandy_bundles.unet import UNetTrainer
 from torch.utils.data import DataLoader
 
-from mipcandy import NNUNetDataset
+from mipcandy import download_dataset, NNUNetDataset
 
-dataset = NNUNetDataset("path/to/your/dataset", device="cuda")
-val_dataset = NNUNetDataset("path/to/your/dataset", split="Ts", device="cuda")
+download_dataset("nnunet_datasets/PH2", "tutorial/datasets/PH2")
+dataset, val_dataset = NNUNetDataset("tutorial/datasets/PH2", device="cuda").fold()
 dataloader = DataLoader(dataset, 2, shuffle=True)
 val_dataloader = DataLoader(val_dataset, 1, shuffle=False)
-trainer = UNetTrainer("path/to/your/trainer/folder", dataloader, val_dataloader, device="cuda")
-trainer.num_dims = 2  # 2D or 3D
+trainer = UNetTrainer("tutorial", dataloader, val_dataloader, device="cuda")
 trainer.train(1000, note="a nnU-Net style example")
 ```
 
