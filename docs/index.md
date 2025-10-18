@@ -41,7 +41,7 @@ class PH2(NNUNetDataset):
 
 
 download_dataset("nnunet_datasets/PH2", "tutorial/datasets/PH2")
-dataset, val_dataset = NNUNetDataset("tutorial/datasets/PH2", device="cuda").fold()
+dataset, val_dataset = PH2("tutorial/datasets/PH2", device="cuda").fold()
 dataloader = DataLoader(dataset, 2, shuffle=True)
 val_dataloader = DataLoader(val_dataset, 1, shuffle=False)
 trainer = UNetTrainer("tutorial", dataloader, val_dataloader, device="cuda")
