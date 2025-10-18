@@ -24,10 +24,21 @@ pip install "mipcandy[all]"
 :::
 
 ```python
+from typing import override
+
+import torch
 from mipcandy_bundles.unet import UNetTrainer
 from torch.utils.data import DataLoader
 
 from mipcandy import download_dataset, NNUNetDataset
+
+
+class PH2(NNUNetDataset):
+    @override
+    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        image, label = super().load(idx)
+        return image.unsqueeze(1).permute(2, 0, 1), label
+
 
 download_dataset("nnunet_datasets/PH2", "tutorial/datasets/PH2")
 dataset, val_dataset = NNUNetDataset("tutorial/datasets/PH2", device="cuda").fold()
