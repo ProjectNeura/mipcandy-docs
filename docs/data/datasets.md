@@ -1159,3 +1159,472 @@ for i in range(len(annotations)):
 
 # ROI patches have much higher foreground ratio
 ```
+
+## Custom Datasets
+
+Create custom dataset classes to handle specialized data formats or preprocessing pipelines.
+
+### When to Create Custom Datasets
+
+**Use custom datasets when:**
+- Data is in non-standard format not supported by built-in datasets
+- Need specialized preprocessing or augmentation
+- Loading from databases or cloud storage
+- Implementing custom caching or lazy loading strategies
+- Combining multiple data sources
+
+**Don't create custom datasets when:**
+- Data fits nnU-Net format → use [`NNUNetDataset`](#mipcandy.data.dataset.NNUNetDataset)
+- Simple directory structure → use [`SimpleDataset`](#mipcandy.data.dataset.SimpleDataset)
+- Pre-loaded tensors → use [`DatasetFromMemory`](#mipcandy.data.dataset.DatasetFromMemory)
+- Binary conversion only → use [`BinarizedDataset`](#mipcandy.data.dataset.BinarizedDataset)
+
+### Basic Requirements
+
+All custom datasets must implement:
+
+**Required methods:**
+- `__init__()`: Initialize with data paths/references
+- `load(idx: int)`: Load and return data at index
+- `__len__()`: Return total number of samples
+
+**For supervised datasets additionally:**
+- `construct_new(images, labels)`: Create new instance with subset (enables `fold()`)
+
+### SupervisedDataset Example
+
+Complete example with all features:
+
+```python
+from typing import override
+from os import PathLike
+
+from mipcandy import SupervisedDataset, load_image
+import torch
+
+
+class CustomMedicalDataset(SupervisedDataset[list[str]]):
+    """
+    Custom dataset for medical images with specialized preprocessing.
+    """
+
+    def __init__(
+        self,
+        image_paths: list[str],
+        label_paths: list[str],
+        *,
+        normalize: bool = True,
+        device: str = "cpu"
+    ):
+        # Call parent constructor
+        super().__init__(image_paths, label_paths, device=device)
+
+        # Store custom parameters
+        self.normalize: bool = normalize
+
+    @override
+    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        # Load image and label
+        image = load_image(self._images[idx], device=self._device)
+        label = load_image(self._labels[idx], is_label=True, device=self._device)
+
+        # Custom preprocessing
+        if self.normalize:
+            image = (image - image.mean()) / (image.std() + 1e-8)
+
+        # Ensure correct shape
+        if image.ndim == 3 and image.shape[0] == 1:
+            image = image.squeeze(0)
+
+        return image, label
+
+    @override
+    def construct_new(self, images: list[str], labels: list[str]):
+        # Create new instance preserving all settings
+        return self.__class__(
+            images,
+            labels,
+            normalize=self.normalize,
+            device=self._device
+        )
+```
+
+**Usage:**
+
+```python
+# Create dataset
+dataset = CustomMedicalDataset(
+    image_paths=["image1.nii.gz", "image2.nii.gz"],
+    label_paths=["label1.nii.gz", "label2.nii.gz"],
+    normalize=True,
+    device="cuda"
+)
+
+# Access samples
+image, label = dataset[0]
+
+# K-fold support (thanks to construct_new)
+train, val = dataset.fold(fold=0)
+```
+
+### UnsupervisedDataset Example
+
+```python
+from typing import override
+
+from mipcandy import UnsupervisedDataset, load_image
+import torch
+
+
+class CustomUnsupervisedDataset(UnsupervisedDataset[list[str]]):
+    """
+    Custom unsupervised dataset with augmentation.
+    """
+
+    def __init__(
+        self,
+        image_paths: list[str],
+        *,
+        augment: bool = False,
+        device: str = "cpu"
+    ):
+        super().__init__(image_paths, device=device)
+        self.augment: bool = augment
+
+    @override
+    def load(self, idx: int) -> torch.Tensor:
+        image = load_image(self._images[idx], device=self._device)
+
+        # Custom augmentation
+        if self.augment:
+            # Random rotation
+            if torch.rand(1).item() > 0.5:
+                image = torch.rot90(image, k=1, dims=(-2, -1))
+
+        return image
+```
+
+**Usage:**
+
+```python
+dataset = CustomUnsupervisedDataset(
+    image_paths=["img1.png", "img2.png"],
+    augment=True,
+    device="cuda"
+)
+
+image = dataset[0]
+```
+
+### Path-based Dataset Example
+
+Extend path-based classes for automatic path management:
+
+```python
+from typing import override
+
+from mipcandy import PathBasedSupervisedDataset, load_image
+import torch
+
+
+class DicomDataset(PathBasedSupervisedDataset):
+    """
+    Dataset for DICOM format with custom series organization.
+    """
+
+    def __init__(self, root_folder: str, *, device: str = "cpu"):
+        # Scan directory and build path lists
+        from os import listdir
+        from os.path import join
+
+        images = sorted([f for f in listdir(join(root_folder, "images")) if f.endswith(".dcm")])
+        labels = sorted([f for f in listdir(join(root_folder, "labels")) if f.endswith(".dcm")])
+
+        super().__init__(
+            [join(root_folder, "images", f) for f in images],
+            [join(root_folder, "labels", f) for f in labels],
+            device=device
+        )
+
+    @override
+    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        # Custom DICOM loading
+        image = self.load_dicom(self._images[idx])
+        label = self.load_dicom(self._labels[idx])
+        return image, label
+
+    def load_dicom(self, path: str) -> torch.Tensor:
+        # Custom DICOM loading logic
+        import pydicom
+        dcm = pydicom.dcmread(path)
+        array = dcm.pixel_array
+        return torch.tensor(array, dtype=torch.float32, device=self._device)
+
+    @override
+    def construct_new(self, images: list[str], labels: list[str]):
+        # Note: Can't use __init__ directly, need custom construction
+        instance = self.__class__.__new__(self.__class__)
+        PathBasedSupervisedDataset.__init__(instance, images, labels, device=self._device)
+        return instance
+```
+
+### Integration with Built-in Features
+
+#### Device Management
+
+Datasets inherit from [`HasDevice`](#mipcandy.layer.HasDevice):
+
+```python
+class MyDataset(SupervisedDataset[list[str]]):
+    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        # Use self._device for automatic device placement
+        image = torch.rand(256, 256, device=self._device)
+        label = torch.randint(0, 2, (256, 256), device=self._device)
+        return image, label
+
+# Device is automatically managed
+dataset = MyDataset(images, labels, device="cuda")
+image, label = dataset[0]  # Already on CUDA
+```
+
+#### Transform Pipeline
+
+Add custom transform support:
+
+```python
+from mipcandy.types import Transform
+
+
+class TransformableDataset(SupervisedDataset[list[str]]):
+    def __init__(
+        self,
+        images: list[str],
+        labels: list[str],
+        *,
+        image_transform: Transform | None = None,
+        label_transform: Transform | None = None,
+        device: str = "cpu"
+    ):
+        super().__init__(images, labels, device=device)
+        self.image_transform: Transform | None = image_transform
+        self.label_transform: Transform | None = label_transform
+
+    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        image = load_image(self._images[idx], device=self._device)
+        label = load_image(self._labels[idx], is_label=True, device=self._device)
+
+        # Apply transforms
+        if self.image_transform:
+            image = self.image_transform(image)
+        if self.label_transform:
+            label = self.label_transform(label)
+
+        return image, label
+
+    def construct_new(self, images: list[str], labels: list[str]):
+        return self.__class__(
+            images,
+            labels,
+            image_transform=self.image_transform,
+            label_transform=self.label_transform,
+            device=self._device
+        )
+```
+
+**Usage:**
+
+```python
+from mipcandy import Normalize
+
+normalizer = Normalize(domain=(0, 1))
+dataset = TransformableDataset(
+    images, labels,
+    image_transform=normalizer,
+    device="cuda"
+)
+```
+
+#### K-Fold Support
+
+Ensure `construct_new()` preserves all custom attributes:
+
+```python
+class MyDataset(SupervisedDataset[list[str]]):
+    def __init__(self, images: list[str], labels: list[str], *, custom_param: int = 10, device: str = "cpu"):
+        super().__init__(images, labels, device=device)
+        self.custom_param: int = custom_param
+
+    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        # ... loading logic using self.custom_param ...
+        pass
+
+    def construct_new(self, images: list[str], labels: list[str]):
+        # IMPORTANT: Pass all custom parameters
+        return self.__class__(
+            images,
+            labels,
+            custom_param=self.custom_param,  # Don't forget this!
+            device=self._device
+        )
+```
+
+**Test K-fold:**
+
+```python
+dataset = MyDataset(images, labels, custom_param=42)
+train, val = dataset.fold(fold=0)
+
+# Verify custom_param is preserved
+assert train.custom_param == 42
+assert val.custom_param == 42
+```
+
+### Advanced Examples
+
+#### Caching Dataset
+
+Cache loaded data for faster iteration:
+
+```python
+class CachedDataset(SupervisedDataset[list[str]]):
+    def __init__(self, images: list[str], labels: list[str], *, device: str = "cpu"):
+        super().__init__(images, labels, device=device)
+        self._cache: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+
+    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        # Check cache first
+        if idx in self._cache:
+            return self._cache[idx]
+
+        # Load if not cached
+        image = load_image(self._images[idx], device=self._device)
+        label = load_image(self._labels[idx], is_label=True, device=self._device)
+
+        # Store in cache
+        self._cache[idx] = (image, label)
+        return image, label
+
+    def construct_new(self, images: list[str], labels: list[str]):
+        # Note: Cache is not shared between instances
+        return self.__class__(images, labels, device=self._device)
+```
+
+#### Multi-input Dataset
+
+Handle multiple input modalities:
+
+```python
+class MultiModalDataset(SupervisedDataset[list[tuple[str, str, str]]]):
+    """
+    Dataset with three input modalities (e.g., T1, T2, FLAIR).
+    """
+
+    def __init__(
+        self,
+        data_tuples: list[tuple[str, str, str]],  # (t1_path, t2_path, flair_path)
+        labels: list[str],
+        *,
+        device: str = "cpu"
+    ):
+        super().__init__(data_tuples, labels, device=device)
+
+    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        t1_path, t2_path, flair_path = self._images[idx]
+
+        # Load all modalities
+        t1 = load_image(t1_path, device=self._device)
+        t2 = load_image(t2_path, device=self._device)
+        flair = load_image(flair_path, device=self._device)
+
+        # Concatenate channels
+        image = torch.cat([t1, t2, flair], dim=0)
+
+        # Load label
+        label = load_image(self._labels[idx], is_label=True, device=self._device)
+
+        return image, label
+
+    def construct_new(
+        self,
+        images: list[tuple[str, str, str]],
+        labels: list[str]
+    ):
+        return self.__class__(images, labels, device=self._device)
+```
+
+### Important Notes
+
+**Type hints:**
+
+Use proper generic typing for IDE support:
+
+```python
+# Correct: Specify storage type
+class MyDataset(SupervisedDataset[list[str]]):
+    ...
+
+# Also correct: Custom storage type
+class MyDataset(SupervisedDataset[list[tuple[str, str]]]):
+    ...
+```
+
+**Device placement:**
+
+Always use `self._device` for tensor creation:
+
+```python
+# Correct
+tensor = torch.rand(256, 256, device=self._device)
+
+# Wrong
+tensor = torch.rand(256, 256).to(self._device)  # Less efficient
+```
+
+**Error handling:**
+
+Add validation in `__init__`:
+
+```python
+def __init__(self, images: list[str], labels: list[str], *, device: str = "cpu"):
+    if len(images) != len(labels):
+        raise ValueError(f"Mismatched images ({len(images)}) and labels ({len(labels)})")
+
+    super().__init__(images, labels, device=device)
+```
+
+**Memory efficiency:**
+
+Avoid loading all data in `__init__`:
+
+```python
+# Good: Lazy loading
+def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    return load_image(self._images[idx], device=self._device), ...
+
+# Bad: Eager loading
+def __init__(self, ...):
+    super().__init__(...)
+    self.all_images = [load_image(p) for p in self._images]  # Loads everything!
+```
+
+**construct_new() pitfalls:**
+
+Preserve ALL custom attributes:
+
+```python
+# Incomplete construct_new (will cause issues)
+def construct_new(self, images, labels):
+    return self.__class__(images, labels, device=self._device)
+    # Missing: custom_param, normalize, etc.!
+
+# Complete construct_new
+def construct_new(self, images, labels):
+    return self.__class__(
+        images,
+        labels,
+        custom_param=self.custom_param,
+        normalize=self.normalize,
+        # ... all other attributes
+        device=self._device
+    )
+```
