@@ -466,3 +466,281 @@ labels = DatasetFromMemory(label_tensors, device="cuda")
 
 dataset = MergedDataset(images, labels, device="cuda")
 ```
+
+## K-Fold Cross Validation
+
+All [`SupervisedDataset`](#mipcandy.data.dataset.SupervisedDataset) instances have built-in K-fold cross validation support through the `fold()` method.
+
+### Basic Usage
+
+The `fold()` method splits the dataset into training and validation sets:
+
+```python
+from mipcandy import NNUNetDataset
+
+dataset = NNUNetDataset("dataset/", device="cuda")
+
+# Split into training and validation
+train_dataset, val_dataset = dataset.fold(fold=0)
+
+print(f"Training samples: {len(train_dataset)}")
+print(f"Validation samples: {len(val_dataset)}")
+```
+
+**Method signature:**
+```python
+def fold(
+    self,
+    *,
+    fold: Literal[0, 1, 2, 3, 4, "all"] = "all",
+    picker: type[KFPicker] = OrderedKFPicker
+) -> tuple[Self, Self]:
+    ...
+```
+
+**Parameters:**
+- `fold`: Which fold to use as validation set
+  - `0`, `1`, `2`, `3`, `4`: Use specific fold (0-4) as validation
+  - `"all"`: Use all samples for validation (training set is empty)
+- `picker`: Strategy for selecting fold samples
+  - `OrderedKFPicker`: Sequential splitting (default, reproducible)
+  - `RandomKFPicker`: Random sampling for validation fold
+
+**Returns:** `(train_dataset, val_dataset)` tuple
+
+### Fold Selection
+
+Standard 5-fold cross validation:
+
+```python
+from mipcandy import NNUNetDataset
+
+dataset = NNUNetDataset("dataset/", device="cuda")
+
+# Fold 0: First 20% as validation
+train_0, val_0 = dataset.fold(fold=0)
+
+# Fold 1: Second 20% as validation
+train_1, val_1 = dataset.fold(fold=1)
+
+# Fold 2: Third 20% as validation
+train_2, val_2 = dataset.fold(fold=2)
+
+# ... and so on for folds 3 and 4
+```
+
+Use all samples for evaluation:
+
+```python
+# Both train and val contain all samples
+train, val = dataset.fold(fold="all")
+print(len(train))  # Full dataset size
+print(len(val))    # Full dataset size
+```
+
+### Picker Strategies
+
+#### OrderedKFPicker (Default)
+
+Splits dataset sequentially into 5 equal parts:
+
+```python
+from mipcandy import NNUNetDataset, OrderedKFPicker
+
+dataset = NNUNetDataset("dataset/", device="cuda")
+
+# Sequential splitting (reproducible)
+train, val = dataset.fold(fold=0, picker=OrderedKFPicker)
+```
+
+**Splitting logic:**
+- Dataset size: 100 samples (indices 0-99)
+- Fold 0 validation: indices 0-19 (20%)
+- Fold 1 validation: indices 20-39 (20%)
+- Fold 2 validation: indices 40-59 (20%)
+- Fold 3 validation: indices 60-79 (20%)
+- Fold 4 validation: indices 80-99 (20%)
+
+**Characteristics:**
+- Reproducible: same fold always gives same split
+- Maintains data order
+- Recommended for most use cases
+
+#### RandomKFPicker
+
+Randomly samples validation indices:
+
+```python
+from mipcandy import NNUNetDataset, RandomKFPicker
+
+dataset = NNUNetDataset("dataset/", device="cuda")
+
+# Random sampling (non-reproducible)
+train, val = dataset.fold(fold=0, picker=RandomKFPicker)
+```
+
+**Characteristics:**
+- Non-reproducible: different splits each time
+- Breaks data order
+- Useful for additional randomization
+
+:::{warning}
+[`RandomKFPicker`](#mipcandy.data.dataset.RandomKFPicker) uses random sampling without a fixed seed, so results will vary between runs. For reproducible experiments, use [`OrderedKFPicker`](#mipcandy.data.dataset.OrderedKFPicker).
+:::
+
+### Complete 5-Fold Example
+
+```python
+from mipcandy import NNUNetDataset
+from torch.utils.data import DataLoader
+
+# Load dataset
+full_dataset = NNUNetDataset("dataset/", device="cuda")
+
+# Track results across folds
+fold_results = []
+
+# 5-fold cross validation
+for fold_id in range(5):
+    print(f"\n=== Fold {fold_id} ===")
+
+    # Create fold split
+    train_dataset, val_dataset = full_dataset.fold(fold=fold_id)
+
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+
+    # Train model for this fold
+    model = create_model()
+    for epoch in range(num_epochs):
+        # Training
+        for images, labels in train_loader:
+            # ... training step ...
+            pass
+
+        # Validation
+        val_score = 0.0
+        for images, labels in val_loader:
+            # ... validation step ...
+            pass
+
+    fold_results.append(val_score)
+
+# Compute cross-validation statistics
+import statistics
+print(f"\nMean score: {statistics.mean(fold_results):.4f}")
+print(f"Std score: {statistics.stdev(fold_results):.4f}")
+```
+
+### Training on Full Dataset
+
+After cross-validation, train final model on all data:
+
+```python
+from mipcandy import NNUNetDataset
+from torch.utils.data import DataLoader
+
+dataset = NNUNetDataset("dataset/", device="cuda")
+
+# Use all samples for training
+train_dataset, _ = dataset.fold(fold="all")
+
+# Train final model
+train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+final_model = create_model()
+
+for epoch in range(num_epochs):
+    for images, labels in train_loader:
+        # ... training step ...
+        pass
+```
+
+### Dataset Export by Fold
+
+Save specific fold split to disk:
+
+```python
+from mipcandy import NNUNetDataset
+
+dataset = NNUNetDataset("dataset/", split="Tr", device="cuda")
+
+# Create fold split
+train, val = dataset.fold(fold=0)
+
+# Save validation fold to separate directory
+val.save("Ts", target_folder="dataset_fold0/")
+
+# Now you have:
+# dataset_fold0/
+# ├── imagesTs/  (validation images from fold 0)
+# └── labelsTs/  (validation labels from fold 0)
+```
+
+:::{note}
+Only [`NNUNetDataset`](#mipcandy.data.dataset.NNUNetDataset) supports the `save()` method. Other dataset types need custom export logic.
+:::
+
+### Combining with Transforms
+
+Apply transforms to full dataset before folding:
+
+```python
+from mipcandy import NNUNetDataset, Normalize
+
+# Create dataset with transforms
+normalizer = Normalize(domain=(0, 1))
+dataset = NNUNetDataset(
+    "dataset/",
+    image_transform=normalizer,
+    align_spacing=True,
+    device="cuda"
+)
+
+# Fold with transforms applied
+train, val = dataset.fold(fold=0)
+
+# Both train and val will have normalized, resampled images
+```
+
+### Implementation Notes
+
+**Dataset Independence:**
+
+Each fold creates independent dataset instances:
+
+```python
+train, val = dataset.fold(fold=0)
+
+# train and val are separate instances
+# Modifying one does not affect the other
+print(id(train) != id(val))  # True
+```
+
+**Memory Sharing:**
+
+Path-based datasets share path lists but create separate instances:
+
+```python
+# Original dataset is not modified
+train, val = dataset.fold(fold=0)
+print(len(dataset))  # Original size unchanged
+
+# But internal path lists are lightweight
+# No image data is duplicated until loading
+```
+
+**Requirements for Custom Datasets:**
+
+To support `fold()`, custom datasets must implement `construct_new()`:
+
+```python
+from mipcandy import SupervisedDataset
+
+class MyDataset(SupervisedDataset[list[str]]):
+    def construct_new(self, images: list[str], labels: list[str]):
+        # Create new instance with subset
+        return MyDataset(images, labels, device=self._device)
+```
+
+See [Custom Datasets](#custom-datasets) for more details.
