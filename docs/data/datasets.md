@@ -150,3 +150,319 @@ binary_dataset = BinarizedDataset(base_dataset, positive_ids=(2,))
 image, binary_label = binary_dataset[0]
 print(f"Unique labels: {binary_label.unique()}")  # [0, 1]
 ```
+
+## Dataset Types
+
+### Base Classes
+
+#### UnsupervisedDataset
+
+Abstract base class for datasets containing images only.
+
+**Type signature:**
+```python
+UnsupervisedDataset[D]  # D is the type of image storage (e.g., list[str], list[torch.Tensor])
+```
+
+**Returns:** `torch.Tensor` (single image)
+
+**Key methods:**
+- `load(idx: int) -> torch.Tensor`: Load image at index
+- `__len__() -> int`: Return number of samples
+
+**Usage:**
+```python
+from mipcandy import UnsupervisedDataset
+
+class MyUnsupervisedDataset(UnsupervisedDataset[list[str]]):
+    def __init__(self, image_paths: list[str], device: str = "cpu"):
+        super().__init__(image_paths, device=device)
+
+    def load(self, idx: int) -> torch.Tensor:
+        # Custom loading logic
+        return load_image(self._images[idx], device=self._device)
+```
+
+#### SupervisedDataset
+
+Abstract base class for datasets containing image-label pairs.
+
+**Type signature:**
+```python
+SupervisedDataset[D]  # D is the type of image/label storage
+```
+
+**Returns:** `tuple[torch.Tensor, torch.Tensor]` (image, label)
+
+**Key methods:**
+- `load(idx: int) -> tuple[torch.Tensor, torch.Tensor]`: Load image and label at index
+- `__len__() -> int`: Return number of samples
+- `construct_new(images: D, labels: D) -> Self`: Create new instance with subset (required for folding)
+- `fold(fold, picker) -> tuple[Self, Self]`: Built-in K-fold splitting
+
+**Usage:**
+```python
+from mipcandy import SupervisedDataset
+
+class MyDataset(SupervisedDataset[list[str]]):
+    def __init__(self, image_paths: list[str], label_paths: list[str], device: str = "cpu"):
+        super().__init__(image_paths, label_paths, device=device)
+
+    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        image = load_image(self._images[idx], device=self._device)
+        label = load_image(self._labels[idx], is_label=True, device=self._device)
+        return image, label
+
+    def construct_new(self, images: list[str], labels: list[str]) -> Self:
+        return MyDataset(images, labels, device=self._device)
+```
+
+### Concrete Implementations
+
+#### NNUNetDataset
+
+Medical imaging dataset following the nnU-Net format convention.
+
+**Directory structure:**
+```
+dataset/
+├── imagesTr/
+│   ├── case_0000_0000.nii.gz  # Single modality
+│   ├── case_0001_0000.nii.gz
+│   └── ...
+├── labelsTr/
+│   ├── case_0000.nii.gz
+│   ├── case_0001.nii.gz
+│   └── ...
+├── imagesTs/  # Test split (optional)
+└── labelsTs/
+```
+
+**Multimodal support:**
+```
+dataset/
+├── imagesTr/
+│   ├── case_0000_0000.nii.gz  # Modality 0 (e.g., T1)
+│   ├── case_0000_0001.nii.gz  # Modality 1 (e.g., T2)
+│   ├── case_0000_0002.nii.gz  # Modality 2 (e.g., FLAIR)
+│   ├── case_0001_0000.nii.gz
+│   └── ...
+└── labelsTr/
+    ├── case_0000.nii.gz
+    └── ...
+```
+
+**Parameters:**
+- `folder`: Dataset root directory
+- `split`: `"Tr"` (training) or `"Ts"` (test), default: `"Tr"`
+- `prefix`: Filter cases by prefix, default: `""`
+- `align_spacing`: Resample to isotropic spacing, default: `False`
+- `image_transform`: Optional image transform function
+- `label_transform`: Optional label transform function
+- `device`: Device placement, default: `"cpu"`
+
+**Examples:**
+
+Basic usage:
+```python
+from mipcandy import NNUNetDataset
+
+# Single modality dataset
+dataset = NNUNetDataset("dataset/", device="cuda")
+image, label = dataset[0]  # (C, H, W) or (C, D, H, W)
+```
+
+Multimodal dataset:
+```python
+# Automatically concatenates all modalities
+dataset = NNUNetDataset("dataset/", device="cuda")
+image, label = dataset[0]  # (N_modalities, H, W) or (N_modalities, D, H, W)
+```
+
+With preprocessing:
+```python
+from mipcandy import NNUNetDataset, Normalize
+
+# Resample to isotropic spacing
+dataset = NNUNetDataset(
+    "dataset/",
+    align_spacing=True,
+    device="cuda"
+)
+
+# With custom transforms
+normalizer = Normalize(domain=(0, 1))
+dataset = NNUNetDataset(
+    "dataset/",
+    image_transform=normalizer,
+    device="cuda"
+)
+```
+
+Test split:
+```python
+# Load test set
+test_dataset = NNUNetDataset("dataset/", split="Ts", device="cuda")
+```
+
+Filter by prefix:
+```python
+# Only load cases starting with "BRATS"
+dataset = NNUNetDataset("dataset/", prefix="BRATS", device="cuda")
+```
+
+**Export dataset:**
+```python
+# Save current dataset split to new location
+dataset.save("Tr", target_folder="processed_dataset/")
+```
+
+#### BinarizedDataset
+
+Wrapper that converts multi-class segmentation to binary segmentation.
+
+**Parameters:**
+- `base`: Underlying supervised dataset
+- `positive_ids`: Tuple of class IDs to treat as positive (foreground)
+
+**Conversion logic:**
+- Classes in `positive_ids` → 1 (positive)
+- All other non-background classes → 0 (negative)
+- Background (0) → 0 (negative)
+
+**Examples:**
+
+Tumor detection:
+```python
+from mipcandy import NNUNetDataset, BinarizedDataset
+
+# Original: 0=background, 1=liver, 2=tumor
+base = NNUNetDataset("dataset/", device="cuda")
+
+# Binary: 0=non-tumor, 1=tumor
+binary = BinarizedDataset(base, positive_ids=(2,))
+```
+
+Multi-organ grouping:
+```python
+# Original: 0=background, 1=spleen, 2=kidney_right, 3=kidney_left
+base = NNUNetDataset("dataset/", device="cuda")
+
+# Binary: kidneys vs others
+binary = BinarizedDataset(base, positive_ids=(2, 3))
+```
+
+:::{note}
+[`BinarizedDataset`](#mipcandy.data.dataset.BinarizedDataset) does not support `construct_new()` and therefore cannot be used with `fold()`. Apply binarization after folding instead.
+:::
+
+Correct usage with K-fold:
+```python
+# Fold first, then binarize
+base = NNUNetDataset("dataset/", device="cuda")
+train, val = base.fold(fold=0)
+
+train_binary = BinarizedDataset(train, positive_ids=(2,))
+val_binary = BinarizedDataset(val, positive_ids=(2,))
+```
+
+#### SimpleDataset
+
+Simple unsupervised dataset loading all files from a directory.
+
+**Parameters:**
+- `folder`: Directory containing images
+- `device`: Device placement, default: `"cpu"`
+
+**Examples:**
+```python
+from mipcandy import SimpleDataset
+
+# Load all images from directory (sorted alphabetically)
+dataset = SimpleDataset("images/", device="cuda")
+
+# Supports various formats
+# images/
+# ├── scan001.nii.gz
+# ├── scan002.nii.gz
+# ├── image001.png
+# └── ...
+
+for image in dataset:
+    print(image.shape)
+```
+
+#### DatasetFromMemory
+
+In-memory dataset for pre-loaded tensors.
+
+**Parameters:**
+- `images`: Sequence of pre-loaded tensors
+- `device`: Device placement, default: `"cpu"`
+
+**Use cases:**
+- Small datasets that fit in memory
+- Avoiding repeated I/O operations
+- Fast iteration during prototyping
+
+**Examples:**
+```python
+from mipcandy import DatasetFromMemory
+import torch
+
+# Pre-load all tensors
+tensors = [torch.rand(3, 256, 256) for _ in range(100)]
+dataset = DatasetFromMemory(tensors, device="cuda")
+
+# Fast access (no I/O)
+image = dataset[0]
+```
+
+Combined with path-based dataset:
+```python
+from mipcandy import NNUNetDataset, DatasetFromMemory
+
+# Load all to memory
+path_dataset = NNUNetDataset("dataset/")
+images = [path_dataset[i][0] for i in range(len(path_dataset))]
+
+# Create memory dataset
+memory_dataset = DatasetFromMemory(images, device="cuda")
+```
+
+#### MergedDataset
+
+Supervised dataset created by merging separate image and label datasets.
+
+**Parameters:**
+- `images`: Unsupervised dataset for images
+- `labels`: Unsupervised dataset for labels
+- `device`: Device placement, default: `"cpu"`
+
+**Examples:**
+```python
+from mipcandy import SimpleDataset, MergedDataset
+
+# Separate directories for images and labels
+images = SimpleDataset("images/", device="cuda")
+labels = SimpleDataset("labels/", device="cuda")
+
+# Merge into supervised dataset
+dataset = MergedDataset(images, labels, device="cuda")
+
+image, label = dataset[0]
+```
+
+With memory datasets:
+```python
+from mipcandy import DatasetFromMemory, MergedDataset
+
+# Pre-loaded tensors
+image_tensors = [...]
+label_tensors = [...]
+
+images = DatasetFromMemory(image_tensors, device="cuda")
+labels = DatasetFromMemory(label_tensors, device="cuda")
+
+dataset = MergedDataset(images, labels, device="cuda")
+```
