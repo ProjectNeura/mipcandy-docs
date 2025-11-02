@@ -60,6 +60,15 @@ layer.md
 ```{toctree}
 :hidden:
 :glob:
+:caption: 📊 Data
+data/index.md
+data/datasets.md
+data/visualization.md
+```
+
+```{toctree}
+:hidden:
+:glob:
 :caption: 🐎 Training
 training/index.md
 training/trainers.md
