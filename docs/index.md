@@ -64,6 +64,7 @@ layer.md
 data/index.md
 data/datasets.md
 data/visualization.md
+data/utilities.md
 ```
 
 ```{toctree}
