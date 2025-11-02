@@ -738,7 +738,7 @@ To support `fold()`, custom datasets must implement `construct_new()`:
 from mipcandy import SupervisedDataset
 
 class MyDataset(SupervisedDataset[list[str]]):
-    def construct_new(self, images: list[str], labels: list[str]):
+    def construct_new(self, images: list[str], labels: list[str]) -> Self:
         # Create new instance with subset
         return MyDataset(images, labels, device=self._device)
 ```
@@ -1239,7 +1239,7 @@ class CustomMedicalDataset(SupervisedDataset[list[str]]):
         return image, label
 
     @override
-    def construct_new(self, images: list[str], labels: list[str]):
+    def construct_new(self, images: list[str], labels: list[str]) -> Self:
         # Create new instance preserving all settings
         return self.__class__(
             images,
@@ -1361,7 +1361,7 @@ class DicomDataset(PathBasedSupervisedDataset):
         return torch.tensor(array, dtype=torch.float32, device=self._device)
 
     @override
-    def construct_new(self, images: list[str], labels: list[str]):
+    def construct_new(self, images: list[str], labels: list[str]) -> Self:
         # Note: Can't use __init__ directly, need custom construction
         instance = self.__class__.__new__(self.__class__)
         PathBasedSupervisedDataset.__init__(instance, images, labels, device=self._device)
@@ -1421,7 +1421,7 @@ class TransformableDataset(SupervisedDataset[list[str]]):
 
         return image, label
 
-    def construct_new(self, images: list[str], labels: list[str]):
+    def construct_new(self, images: list[str], labels: list[str]) -> Self:
         return self.__class__(
             images,
             labels,
@@ -1458,7 +1458,7 @@ class MyDataset(SupervisedDataset[list[str]]):
         # ... loading logic using self.custom_param ...
         pass
 
-    def construct_new(self, images: list[str], labels: list[str]):
+    def construct_new(self, images: list[str], labels: list[str]) -> Self:
         # IMPORTANT: Pass all custom parameters
         return self.__class__(
             images,
@@ -1504,7 +1504,7 @@ class CachedDataset(SupervisedDataset[list[str]]):
         self._cache[idx] = (image, label)
         return image, label
 
-    def construct_new(self, images: list[str], labels: list[str]):
+    def construct_new(self, images: list[str], labels: list[str]) -> Self:
         # Note: Cache is not shared between instances
         return self.__class__(images, labels, device=self._device)
 ```
@@ -1548,7 +1548,7 @@ class MultiModalDataset(SupervisedDataset[list[tuple[str, str, str]]]):
         self,
         images: list[tuple[str, str, str]],
         labels: list[str]
-    ):
+    ) -> Self:
         return self.__class__(images, labels, device=self._device)
 ```
 
@@ -1613,12 +1613,12 @@ Preserve ALL custom attributes:
 
 ```python
 # Incomplete construct_new (will cause issues)
-def construct_new(self, images, labels):
+def construct_new(self, images, labels) -> Self:
     return self.__class__(images, labels, device=self._device)
     # Missing: custom_param, normalize, etc.!
 
 # Complete construct_new
-def construct_new(self, images, labels):
+def construct_new(self, images, labels) -> Self:
     return self.__class__(
         images,
         labels,
