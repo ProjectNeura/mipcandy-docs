@@ -392,13 +392,15 @@ Example:
 
 ```python
 from typing import override, Mapping, Any
+from os import PathLike
 from torch import nn
 from mipcandy.inference import SlidingPredictor
 
 class UNetPredictor(SlidingPredictor):
-    def __init__(self, experiment_folder, *, checkpoint="checkpoint_best.pth", device="cuda"):
+    def __init__(self, experiment_folder: str | PathLike[str], *, checkpoint: str = "checkpoint_best.pth", 
+                 device: str | torch.device | None = "cuda") -> None:
         super().__init__(experiment_folder, checkpoint=checkpoint, device=device)
-        self.num_classes = 1
+        self.num_classes: int = 1
 
     @override
     def build_network(self, checkpoint: Mapping[str, Any]) -> nn.Module:
