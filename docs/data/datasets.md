@@ -1196,7 +1196,7 @@ All custom datasets must implement:
 Complete example with all features:
 
 ```python
-from typing import override
+from typing import override, Self
 from os import PathLike
 
 from mipcandy import SupervisedDataset, load_image
@@ -1321,7 +1321,7 @@ image = dataset[0]
 Extend path-based classes for automatic path management:
 
 ```python
-from typing import override
+from typing import override, Self
 
 from mipcandy import PathBasedSupervisedDataset, load_image
 import torch
@@ -1392,6 +1392,8 @@ image, label = dataset[0]  # Already on CUDA
 Add custom transform support:
 
 ```python
+from typing import Self
+
 from mipcandy.types import Transform
 
 
@@ -1449,6 +1451,9 @@ dataset = TransformableDataset(
 Ensure `construct_new()` preserves all custom attributes:
 
 ```python
+from typing import Self
+
+
 class MyDataset(SupervisedDataset[list[str]]):
     def __init__(self, images: list[str], labels: list[str], *, custom_param: int = 10, device: str = "cpu"):
         super().__init__(images, labels, device=device)
@@ -1488,6 +1493,9 @@ if val.custom_param != 42:
 Cache loaded data for faster iteration:
 
 ```python
+from typing import Self
+
+
 class CachedDataset(SupervisedDataset[list[str]]):
     def __init__(self, images: list[str], labels: list[str], *, device: str = "cpu"):
         super().__init__(images, labels, device=device)
@@ -1516,6 +1524,9 @@ class CachedDataset(SupervisedDataset[list[str]]):
 Handle multiple input modalities:
 
 ```python
+from typing import Self
+
+
 class MultiModalDataset(SupervisedDataset[list[tuple[str, str, str]]]):
     """
     Dataset with three input modalities (e.g., T1, T2, FLAIR).
