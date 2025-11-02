@@ -1475,8 +1475,10 @@ dataset = MyDataset(images, labels, custom_param=42)
 train, val = dataset.fold(fold=0)
 
 # Verify custom_param is preserved
-assert train.custom_param == 42
-assert val.custom_param == 42
+if train.custom_param != 42:
+    raise AssertionError("Custom param not preserved")
+if val.custom_param != 42:
+    raise AssertionError("Custom param not preserved")
 ```
 
 ### Advanced Examples
