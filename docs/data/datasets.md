@@ -744,3 +744,418 @@ class MyDataset(SupervisedDataset[list[str]]):
 ```
 
 See [Custom Datasets](#custom-datasets) for more details.
+
+## Dataset Inspection and Patches
+
+Medical imaging datasets often have large volumes with small regions of interest (ROI). The inspection module provides tools for analyzing foreground regions and extracting patches for efficient training.
+
+### Overview
+
+**Why patch-based training?**
+
+Medical images often have:
+- Large volumes (e.g., 512×512×512) that don't fit in GPU memory
+- Sparse foreground regions (e.g., tumors occupy <5% of volume)
+- Variable image sizes across cases
+
+**Patch-based approach:**
+- Extract small patches (e.g., 128×128×128) centered on ROI
+- Train on informative regions, reducing memory usage
+- Handle variable image sizes uniformly
+
+**MIPCandy inspection provides:**
+- Automatic foreground region detection
+- Statistical analysis of ROI sizes and positions
+- Intelligent patch extraction centered on foreground
+- Ready-to-use patch datasets for training
+
+### Inspecting Datasets
+
+The [`inspect()`](#mipcandy.data.inspection.inspect) function automatically analyzes a dataset:
+
+```python
+from mipcandy import NNUNetDataset, inspect
+
+# Load dataset
+dataset = NNUNetDataset("dataset/", device="cuda")
+
+# Inspect all cases
+annotations = inspect(dataset, background=0)
+
+print(f"Inspected {len(annotations)} cases")
+```
+
+**Parameters:**
+- `dataset`: Any [`SupervisedDataset`](#mipcandy.data.dataset.SupervisedDataset)
+- `background`: Background class ID (default: `0`)
+
+**Returns:** [`InspectionAnnotations`](#mipcandy.data.inspection.InspectionAnnotations) object
+
+**What it computes:**
+
+For each case:
+- Image shape
+- Foreground bounding box (minimal box containing all non-background voxels)
+- Unique class IDs present in the label
+
+### InspectionAnnotation
+
+Individual case annotation containing metadata:
+
+```python
+from mipcandy import inspect, NNUNetDataset
+
+dataset = NNUNetDataset("dataset/", device="cuda")
+annotations = inspect(dataset)
+
+# Access individual annotation
+annotation = annotations[0]
+
+print(f"Image shape: {annotation.shape}")
+print(f"Foreground bbox: {annotation.foreground_bbox}")
+print(f"Class IDs: {annotation.ids}")
+```
+
+**Attributes:**
+- `shape`: Image spatial dimensions `(H, W)` or `(D, H, W)`
+- `foreground_bbox`: Bounding box `(y0, y1, x0, x1)` or `(z0, z1, y0, y1, x0, x1)`
+- `ids`: Tuple of unique class IDs in label
+
+**Methods:**
+
+```python
+# Get foreground region size
+fg_shape = annotation.foreground_shape()
+print(f"Foreground size: {fg_shape}")  # (H, W) or (D, H, W)
+
+# Get foreground center
+center = annotation.center_of_foreground()
+print(f"Foreground center: {center}")  # (y, x) or (z, y, x)
+```
+
+### InspectionAnnotations
+
+Collection of annotations with statistical analysis:
+
+#### Basic Access
+
+```python
+from mipcandy import inspect, NNUNetDataset
+
+dataset = NNUNetDataset("dataset/", device="cuda")
+annotations = inspect(dataset)
+
+# Length
+print(f"Number of cases: {len(annotations)}")
+
+# Iteration
+for annotation in annotations:
+    print(annotation.foreground_bbox)
+
+# Indexing
+first = annotations[0]
+```
+
+#### Statistical Analysis
+
+**Image and foreground shapes:**
+
+```python
+# Get all image shapes
+depths, heights, widths = annotations.shapes()
+
+if depths:  # 3D dataset
+    print(f"Depth range: {min(depths)} - {max(depths)}")
+print(f"Height range: {min(heights)} - {max(heights)}")
+print(f"Width range: {min(widths)} - {max(widths)}")
+
+# Get all foreground shapes
+fg_depths, fg_heights, fg_widths = annotations.foreground_shapes()
+
+if fg_depths:
+    print(f"Foreground depth range: {min(fg_depths)} - {max(fg_depths)}")
+print(f"Foreground height range: {min(fg_heights)} - {max(fg_heights)}")
+print(f"Foreground width range: {min(fg_widths)} - {max(fg_widths)}")
+```
+
+**Statistical foreground shape:**
+
+Compute representative foreground size using percentile:
+
+```python
+# 95th percentile (default)
+stat_shape = annotations.statistical_foreground_shape(percentile=0.95)
+print(f"95th percentile foreground: {stat_shape}")
+
+# 99th percentile (larger patches)
+stat_shape_99 = annotations.statistical_foreground_shape(percentile=0.99)
+print(f"99th percentile foreground: {stat_shape_99}")
+```
+
+This is useful for determining patch size that covers most foregrounds.
+
+**Foreground heatmap:**
+
+Generate heatmap showing where foreground regions typically occur:
+
+```python
+# Compute heatmap (expensive, computed once and cached)
+heatmap = annotations.foreground_heatmap()
+
+print(f"Heatmap shape: {heatmap.shape}")
+
+# Visualize heatmap
+from mipcandy import visualize2d, visualize3d
+
+if heatmap.ndim == 2:
+    visualize2d(heatmap, title="Foreground Heatmap")
+else:
+    visualize3d(heatmap, title="Foreground Heatmap 3D")
+```
+
+**Center of foregrounds:**
+
+Find the typical center position across all cases:
+
+```python
+# Compute global foreground center
+center = annotations.center_of_foregrounds()
+print(f"Typical foreground center: {center}")
+
+# Offsets from center for each case
+offsets = annotations.center_of_foregrounds_offsets()
+print(f"Center offsets: {offsets}")
+```
+
+#### ROI Shape Determination
+
+Automatically determine optimal ROI size:
+
+```python
+# Automatic ROI shape based on statistics
+roi_shape = annotations.roi_shape(percentile=0.95)
+print(f"Recommended ROI shape: {roi_shape}")
+
+# Manual override
+annotations.set_roi_shape((128, 128, 128))
+roi_shape = annotations.roi_shape()
+print(f"Manual ROI shape: {roi_shape}")
+```
+
+:::{note}
+The automatic ROI shape is computed as the minimum of:
+- Statistical foreground shape (95th percentile by default)
+- Minimum image size across all cases
+
+This ensures patches fit within all images while covering most foregrounds.
+:::
+
+### ROI Extraction
+
+#### crop_foreground()
+
+Extract foreground region with optional expansion:
+
+```python
+from mipcandy import inspect, NNUNetDataset
+
+dataset = NNUNetDataset("dataset/", device="cuda")
+annotations = inspect(dataset)
+
+# Crop to exact foreground bbox
+image_crop, label_crop = annotations.crop_foreground(0)
+
+# Crop with 1.5x expansion (50% padding)
+image_expanded, label_expanded = annotations.crop_foreground(0, expand_ratio=1.5)
+
+print(f"Original foreground: {annotations[0].foreground_shape()}")
+print(f"Cropped shape: {image_crop.shape}")
+print(f"Expanded shape: {image_expanded.shape}")
+```
+
+**Parameters:**
+- `i`: Case index
+- `expand_ratio`: Expansion factor (default: `1.0`)
+
+#### crop_roi()
+
+Extract ROI centered on foreground:
+
+```python
+# Crop to computed ROI shape
+image_roi, label_roi = annotations.crop_roi(0)
+
+print(f"ROI shape: {image_roi.shape}")
+
+# Use different percentile
+image_roi_99, label_roi_99 = annotations.crop_roi(0, percentile=0.99)
+```
+
+**Behavior:**
+- Centers patch on case-specific foreground center
+- Applies global offsets to align with typical foreground position
+- Ensures patch stays within image boundaries
+- Returns fixed-size patches (determined by `roi_shape()`)
+
+#### roi()
+
+Get ROI bounding box without cropping:
+
+```python
+# Get ROI coordinates
+bbox = annotations.roi(0, percentile=0.95)
+
+if len(bbox) == 4:  # 2D
+    y0, y1, x0, x1 = bbox
+    print(f"2D ROI: y[{y0}:{y1}], x[{x0}:{x1}]")
+else:  # 3D
+    z0, z1, y0, y1, x0, x1 = bbox
+    print(f"3D ROI: z[{z0}:{z1}], y[{y0}:{y1}], x[{x0}:{x1}]")
+```
+
+### ROIDataset
+
+Dataset wrapper that yields ROI patches instead of full images:
+
+```python
+from mipcandy import NNUNetDataset, inspect, ROIDataset
+from torch.utils.data import DataLoader
+
+# Load and inspect dataset
+dataset = NNUNetDataset("dataset/", device="cuda")
+annotations = inspect(dataset)
+
+# Create ROI dataset
+roi_dataset = ROIDataset(annotations, percentile=0.95)
+
+print(f"ROI dataset size: {len(roi_dataset)}")
+
+# Access patches
+image_patch, label_patch = roi_dataset[0]
+print(f"Patch shape: {image_patch.shape}")
+
+# Use with DataLoader
+loader = DataLoader(roi_dataset, batch_size=4, shuffle=True)
+for images, labels in loader:
+    print(f"Batch images: {images.shape}")
+    print(f"Batch labels: {labels.shape}")
+    break
+```
+
+**Parameters:**
+- `annotations`: [`InspectionAnnotations`](#mipcandy.data.inspection.InspectionAnnotations) object
+- `percentile`: Percentile for ROI size determination (default: `0.95`)
+
+**Characteristics:**
+- Returns fixed-size patches centered on foreground
+- Compatible with PyTorch DataLoader
+- Inherits device from annotations
+- Does not support `fold()` (fold before inspection)
+
+### Saving and Loading Annotations
+
+Save inspection results to avoid re-computation:
+
+```python
+from mipcandy import inspect, NNUNetDataset
+
+# Inspect and save
+dataset = NNUNetDataset("dataset/", device="cuda")
+annotations = inspect(dataset)
+annotations.save("annotations.csv")
+
+# Load later (note: requires dataset reference)
+# from mipcandy import load_inspection_annotations
+# annotations = load_inspection_annotations("annotations.csv")
+```
+
+### Complete Patch-based Training Example
+
+```python
+from mipcandy import NNUNetDataset, inspect, ROIDataset
+from torch.utils.data import DataLoader
+
+# Load dataset
+full_dataset = NNUNetDataset("dataset/", device="cuda")
+
+# K-fold split FIRST
+train_dataset, val_dataset = full_dataset.fold(fold=0)
+
+# Inspect training set
+train_annotations = inspect(train_dataset, background=0)
+print(f"Inspected {len(train_annotations)} training cases")
+
+# Analyze dataset
+roi_shape = train_annotations.roi_shape(percentile=0.95)
+print(f"Recommended ROI shape: {roi_shape}")
+
+# Optionally visualize heatmap
+heatmap = train_annotations.foreground_heatmap()
+from mipcandy import visualize3d
+visualize3d(heatmap, title="Training Foreground Heatmap")
+
+# Create ROI dataset for training
+train_roi = ROIDataset(train_annotations, percentile=0.95)
+
+# Inspect validation set separately
+val_annotations = inspect(val_dataset, background=0)
+val_roi = ROIDataset(val_annotations, percentile=0.95)
+
+# Create loaders
+train_loader = DataLoader(train_roi, batch_size=4, shuffle=True)
+val_loader = DataLoader(val_roi, batch_size=1, shuffle=False)
+
+# Train on patches
+for epoch in range(num_epochs):
+    # Training
+    for images, labels in train_loader:
+        # images: (B, C, H, W) or (B, C, D, H, W)
+        # All patches have same size
+        pass
+
+    # Validation
+    for images, labels in val_loader:
+        pass
+```
+
+:::{tip}
+Always inspect training and validation sets separately after folding to ensure statistics are computed only on training data.
+:::
+
+### Use Cases
+
+**Small GPU memory:**
+```python
+# Large volumes don't fit in GPU
+# Use patches instead
+annotations = inspect(dataset)
+annotations.set_roi_shape((128, 128, 128))  # Fits in GPU
+roi_dataset = ROIDataset(annotations)
+```
+
+**Variable image sizes:**
+```python
+# Dataset has different image sizes
+# ROIDataset yields uniform patches
+shapes = annotations.shapes()
+print(f"Variable sizes: {min(shapes[1])}x{min(shapes[2])} to {max(shapes[1])}x{max(shapes[2])}")
+
+roi_dataset = ROIDataset(annotations)
+# All patches have same size determined by roi_shape()
+```
+
+**Focus on foreground:**
+```python
+# Sparse foreground regions
+# Patches centered on ROI avoid empty patches
+annotations = inspect(dataset)
+for i in range(len(annotations)):
+    fg_ratio = (
+        annotations[i].foreground_shape()[0] *
+        annotations[i].foreground_shape()[1] /
+        (annotations[i].shape[0] * annotations[i].shape[1])
+    )
+    print(f"Case {i}: {fg_ratio*100:.1f}% foreground")
+
+# ROI patches have much higher foreground ratio
+```
