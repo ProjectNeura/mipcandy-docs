@@ -52,6 +52,7 @@ trainer.train(1000, note="a nnU-Net style example")
 :hidden:
 :glob:
 :caption: 🛠️ Framework
+download-dataset.md
 metrics.md
 layer.md
 ```
