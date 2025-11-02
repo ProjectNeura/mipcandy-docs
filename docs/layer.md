@@ -93,8 +93,9 @@ def build_layer(in_ch: int, norm: LayerT):
 LayerT is extensively used throughout MIPCandy for configurable module construction:
 
 ```python
-from mipcandy.layer import LayerT
+import torch
 from torch import nn
+from mipcandy.layer import LayerT
 
 class ConfigurableBlock(nn.Module):
     def __init__(
@@ -104,15 +105,15 @@ class ConfigurableBlock(nn.Module):
         *,
         conv: LayerT = LayerT(nn.Conv2d, kernel_size=3, padding=1),
         norm: LayerT = LayerT(nn.BatchNorm2d),
-        activation: LayerT = LayerT(nn.ReLU, inplace=True)
-    ):
+        act: LayerT = LayerT(nn.ReLU, inplace=True)
+    ) -> None:
         super().__init__()
-        self.conv = conv.assemble(in_channels=in_ch, out_channels=out_ch)
-        self.norm = norm.assemble(num_features=out_ch)
-        self.activation = activation.assemble()
+        self.conv: nn.Module = conv.assemble(in_channels=in_ch, out_channels=out_ch)
+        self.norm: nn.Module = norm.assemble(num_features=out_ch)
+        self.act: nn.Module = act.assemble()
 
-    def forward(self, x):
-        return self.activation(self.norm(self.conv(x)))
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act(self.norm(self.conv(x)))
 
 # Usage with different configurations
 # Default configuration
@@ -132,14 +133,15 @@ block3 = ConfigurableBlock(32, 64, activation=LayerT(nn.GELU))
 [`HasDevice`](#mipcandy.layer.HasDevice) is a base class that provides device management capabilities:
 
 ```python
+import torch
 from mipcandy.layer import HasDevice
 
 class MyComponent(HasDevice):
-    def __init__(self, device="cuda"):
+    def __init__(self, device: str | torch.device | None = "cuda") -> None:
         super().__init__(device)
         # self._device is now available
 
-    def process(self, data):
+    def process(self, data: torch.Tensor) -> torch.Tensor:
         # Get current device
         device = self.device()
         # Move data to device
@@ -151,11 +153,12 @@ class MyComponent(HasDevice):
 [`WithPaddingModule`](#mipcandy.layer.WithPaddingModule) extends `HasDevice` with lazy-loaded padding and restoring modules:
 
 ```python
-from mipcandy.layer import WithPaddingModule
+import torch
 from torch import nn
+from mipcandy.layer import WithPaddingModule
 
 class MyPredictor(WithPaddingModule):
-    def __init__(self, device="cuda"):
+    def __init__(self, device: str | torch.device | None = "cuda") -> None:
         super().__init__(device)
 
     def build_padding_module(self) -> nn.Module | None:
@@ -170,7 +173,7 @@ class MyPredictor(WithPaddingModule):
             return Restore2d(padding_module)
         return None
 
-    def process(self, image):
+    def process(self, image: torch.Tensor) -> torch.Tensor:
         # Lazy load padding module
         padding = self.get_padding_module()
         if padding:
