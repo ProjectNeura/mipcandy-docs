@@ -210,13 +210,13 @@ from mipcandy import Trainer, TrainerToolbox, Params, DiceBCELossWithLogits, Abs
 class SimpleUNet(nn.Module):
     def __init__(self, in_channels: int, num_classes: int):
         super().__init__()
-        self.encoder = nn.Sequential(
+        self.encoder: nn.Sequential = nn.Sequential(
             nn.Conv2d(in_channels, 64, 3, padding=1),
             nn.ReLU(),
             nn.Conv2d(64, 64, 3, padding=1),
             nn.ReLU()
         )
-        self.decoder = nn.Conv2d(64, num_classes, 1)
+        self.decoder: nn.Module = nn.Conv2d(64, num_classes, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.encoder(x)
@@ -438,7 +438,7 @@ from torch.utils.data import DataLoader
 
 
 class MyTrainer(SlidingSegmentationTrainer):
-    sliding_window_shape = (192, 192)  # Custom window size
+    sliding_window_shape: tuple[int, int] = (192, 192)  # Custom window size
 
     @override
     def build_network(self, example_shape: tuple[int, ...]) -> nn.Module:
