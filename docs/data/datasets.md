@@ -774,6 +774,10 @@ Medical images often have:
 The [`inspect()`](#mipcandy.data.inspection.inspect) function automatically analyzes a dataset:
 
 ```python
+def inspect(dataset: SupervisedDataset, *, background: int = 0) -> InspectionAnnotations:
+```
+
+```python
 from mipcandy import NNUNetDataset, inspect
 
 # Load dataset
@@ -954,6 +958,10 @@ This ensures patches fit within all images while covering most foregrounds.
 
 #### crop_foreground()
 
+```python
+def crop_foreground(self, i: int, *, expand_ratio: float = 1) -> tuple[torch.Tensor, torch.Tensor]:
+```
+
 Extract foreground region with optional expansion:
 
 ```python
@@ -979,6 +987,10 @@ print(f"Expanded shape: {image_expanded.shape}")
 
 #### crop_roi()
 
+```python
+def crop_roi(self, i: int, *, percentile: float = .95) -> tuple[torch.Tensor, torch.Tensor]:
+```
+
 Extract ROI centered on foreground:
 
 ```python
@@ -998,6 +1010,10 @@ image_roi_99, label_roi_99 = annotations.crop_roi(0, percentile=0.99)
 - Returns fixed-size patches (determined by `roi_shape()`)
 
 #### roi()
+
+```python
+def roi(self, i: int, *, percentile: float = .95) -> tuple[int, int, int, int] | tuple[int, int, int, int, int, int]:
+```
 
 Get ROI bounding box without cropping:
 

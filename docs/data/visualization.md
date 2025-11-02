@@ -48,6 +48,11 @@ visualize2d(overlaid, title="Prediction Overlay")
 
 The [`visualize2d()`](#mipcandy.data.visualization.visualize2d) function renders 2D images using Matplotlib.
 
+```python
+def visualize2d(image: torch.Tensor, *, title: str | None = None, cmap: str = "gray",
+                blocking: bool = False, screenshot_as: str | PathLike[str] | None = None) -> None:
+```
+
 ### Basic Usage
 
 ```python
@@ -129,6 +134,12 @@ visualize2d(volume)  # Uses first depth slice
 ## 3D Visualization
 
 The [`visualize3d()`](#mipcandy.data.visualization.visualize3d) function renders 3D volumes with interactive viewing.
+
+```python
+def visualize3d(image: torch.Tensor, *, title: str | None = None, cmap: str = "gray", max_volume: int = 1e6,
+                backend: Literal["auto", "matplotlib", "pyvista"] = "auto", blocking: bool = False,
+                screenshot_as: str | PathLike[str] | None = None) -> None:
+```
 
 ### Basic Usage
 
@@ -241,6 +252,11 @@ PyVista backend spawns a separate process for non-blocking display, allowing you
 ## Overlay Visualization
 
 The [`overlay()`](#mipcandy.data.visualization.overlay) function combines images with segmentation masks or predictions.
+
+```python
+def overlay(image: torch.Tensor, label: torch.Tensor, *, max_label_opacity: float = .5,
+            label_colorizer: ColorizeLabel | None = ColorizeLabel()) -> torch.Tensor:
+```
 
 ### Basic Usage
 
@@ -364,6 +380,10 @@ When label values are in [0, 1] range, [`ColorizeLabel`](#mipcandy.common.module
 ## Utilities
 
 ### auto_convert()
+
+```python
+def auto_convert(image: torch.Tensor) -> torch.Tensor:
+```
 
 The [`auto_convert()`](#mipcandy.data.visualization.auto_convert) function normalizes tensors to [0, 255] integer range for display.
 
