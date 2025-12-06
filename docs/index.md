@@ -37,7 +37,7 @@ class PH2(NNUNetDataset):
     @override
     def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         image, label = super().load(idx)
-        return image.unsqueeze(1).permute(2, 0, 1), label
+        return image.squeeze(0).permute(2, 0, 1), label
 
 
 download_dataset("nnunet_datasets/PH2", "tutorial/datasets/PH2")
