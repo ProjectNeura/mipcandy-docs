@@ -1124,6 +1124,67 @@ for images, labels in loader:
 - Inherits device from annotations
 - Does not support `fold()` (fold before inspection)
 
+### RandomROIDataset
+
+Extended ROI dataset with random patch sampling and foreground oversampling, designed for more effective training on datasets with sparse foreground regions.
+
+```python
+from mipcandy import NNUNetDataset, inspect, RandomROIDataset
+from torch.utils.data import DataLoader
+
+# Load and inspect dataset
+dataset = NNUNetDataset("dataset/", device="cuda")
+annotations = inspect(dataset)
+
+# Create RandomROIDataset with foreground oversampling
+roi_dataset = RandomROIDataset(
+    annotations,
+    percentile=0.95,
+    foreground_oversample_percentage=0.33  # 33% of patches guaranteed to contain foreground
+)
+
+loader = DataLoader(roi_dataset, batch_size=4, shuffle=True)
+```
+
+**Parameters:**
+- `annotations`: [`InspectionAnnotations`](#mipcandy.data.inspection.InspectionAnnotations) object
+- `percentile`: Percentile for ROI size determination (default: `0.95`)
+- `foreground_oversample_percentage`: Probability of forcing foreground in patch center (default: `0.33`)
+- `min_foreground_samples`: Minimum foreground voxels to cache per case (default: `500`)
+- `max_foreground_samples`: Maximum foreground voxels to cache per case (default: `10000`)
+- `min_percent_coverage`: Minimum percentage of foreground to sample (default: `0.01`)
+
+**Behavior:**
+
+Unlike [`ROIDataset`](#mipcandy.data.inspection.ROIDataset) which always centers patches on the foreground center:
+- With probability `foreground_oversample_percentage`, samples a random foreground voxel and centers the patch there
+- Otherwise, samples a completely random patch location within the image bounds
+- Caches foreground locations for efficient repeated sampling
+
+**Use cases:**
+
+Sparse foreground (e.g., small tumors):
+```python
+# High oversampling for very sparse foreground
+roi_dataset = RandomROIDataset(
+    annotations,
+    foreground_oversample_percentage=0.5  # 50% foreground-centered
+)
+```
+
+Dense foreground (e.g., organ segmentation):
+```python
+# Lower oversampling when foreground is common
+roi_dataset = RandomROIDataset(
+    annotations,
+    foreground_oversample_percentage=0.2  # 20% foreground-centered
+)
+```
+
+:::{tip}
+[`RandomROIDataset`](#mipcandy.data.inspection.RandomROIDataset) is particularly effective for class-imbalanced datasets where foreground regions occupy a small fraction of the image. The random sampling helps the model see more varied contexts around the target structures.
+:::
+
 ### Saving and Loading Annotations
 
 Save inspection results to avoid re-computation:
