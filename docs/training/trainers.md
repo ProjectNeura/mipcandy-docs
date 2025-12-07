@@ -686,6 +686,78 @@ class MyTrainer(Trainer):
 
 The padding module is automatically applied to inputs during training and validation.
 
+### Training Recovery
+
+Resume interrupted training sessions using `recover_from()` and `continue_training()`:
+
+```python
+from mipcandy_bundles.unet import UNetTrainer
+
+# Create trainer with same configuration
+trainer = UNetTrainer("experiments", train_loader, val_loader, device="cuda")
+
+# Recover from a specific experiment
+trainer.recover_from("20251201-14-a3f2")
+
+# Continue training for additional epochs
+trainer.continue_training(50)  # Add 50 more epochs
+```
+
+**How it works:**
+1. `recover_from(experiment_id)` loads:
+   - Saved metrics history
+   - Training tracker state (best score, epoch count)
+   - Training arguments from the original run
+
+2. `continue_training(num_epochs)` resumes with:
+   - Model loaded from `checkpoint_latest.pth`
+   - Optimizer and scheduler states restored
+   - Metrics continuing from where training stopped
+
+**Use cases:**
+
+Recovering from crashes:
+```python
+# Original training crashed at epoch 75
+trainer = UNetTrainer("experiments", train_loader, val_loader, device="cuda")
+trainer.recover_from("20251201-14-a3f2")
+trainer.continue_training(25)  # Complete remaining 25 epochs
+```
+
+Extending successful training:
+```python
+# Model still improving at epoch 100, extend training
+trainer.recover_from("20251201-14-a3f2")
+trainer.continue_training(100)  # Add 100 more epochs
+```
+
+:::{note}
+Recovery requires the experiment folder to exist with `checkpoint_latest.pth`, `optimizer.pth`, `scheduler.pth`, and `criterion.pth` files.
+:::
+
+### Loading Toolbox
+
+Load a complete training toolbox from a saved experiment:
+
+```python
+trainer = UNetTrainer("experiments", train_loader, val_loader, device="cuda")
+trainer.recover_from("20251201-14-a3f2")
+
+# Load toolbox with model, optimizer, scheduler, criterion
+toolbox = trainer.load_toolbox(num_epochs=100, example_shape=(1, 256, 256))
+
+# Access individual components
+model = toolbox.model
+optimizer = toolbox.optimizer
+scheduler = toolbox.scheduler
+criterion = toolbox.criterion
+```
+
+This is useful for:
+- Custom inference pipelines
+- Fine-tuning on new data
+- Analyzing trained models
+
 ## Metrics Display
 
 The trainer displays detailed metrics tables after each epoch:
