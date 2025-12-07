@@ -486,7 +486,8 @@ Dataset that concatenates multiple datasets into a single unified dataset.
 
 Combining multiple datasets:
 ```python
-from mipcandy import NNUNetDataset, ComposeDataset
+from mipcandy import NNUNetDataset
+from mipcandy.data.dataset import ComposeDataset
 
 # Load datasets from different sources
 dataset_a = NNUNetDataset("hospital_a/", device="cuda")
@@ -505,7 +506,8 @@ image, label = composed[len(dataset_a)]  # First sample from dataset_b
 
 Multi-center study:
 ```python
-from mipcandy import NNUNetDataset, ComposeDataset
+from mipcandy import NNUNetDataset
+from mipcandy.data.dataset import ComposeDataset
 from torch.utils.data import DataLoader
 
 # Datasets from multiple centers
@@ -601,7 +603,8 @@ print(len(val))    # Full dataset size
 Splits dataset sequentially into 5 equal parts:
 
 ```python
-from mipcandy import NNUNetDataset, OrderedKFPicker
+from mipcandy import NNUNetDataset
+from mipcandy.data.dataset import OrderedKFPicker
 
 dataset = NNUNetDataset("dataset/", device="cuda")
 
@@ -627,7 +630,8 @@ train, val = dataset.fold(fold=0, picker=OrderedKFPicker)
 Randomly samples validation indices:
 
 ```python
-from mipcandy import NNUNetDataset, RandomKFPicker
+from mipcandy import NNUNetDataset
+from mipcandy.data.dataset import RandomKFPicker
 
 dataset = NNUNetDataset("dataset/", device="cuda")
 
@@ -830,7 +834,7 @@ Medical images often have:
 The [`inspect()`](#mipcandy.data.inspection.inspect) function automatically analyzes a dataset:
 
 ```python
-def inspect(dataset: SupervisedDataset, *, background: int = 0) -> InspectionAnnotations:
+def inspect(dataset: SupervisedDataset, *, background: int = 0, console: Console = Console()) -> InspectionAnnotations:
 ```
 
 ```python
@@ -848,6 +852,7 @@ print(f"Inspected {len(annotations)} cases")
 **Parameters:**
 - `dataset`: Any [`SupervisedDataset`](#mipcandy.data.dataset.SupervisedDataset)
 - `background`: Background class ID (default: `0`)
+- `console`: Rich console for progress display (default: `Console()`)
 
 **Returns:** [`InspectionAnnotations`](#mipcandy.data.inspection.InspectionAnnotations) object
 
