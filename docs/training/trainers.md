@@ -342,11 +342,20 @@ from mipcandy import SegmentationTrainer
 
 class MySegTrainer(SegmentationTrainer):
     num_classes: int = 3  # Multi-class segmentation
+    include_bg: bool = False  # Exclude background from Dice computation
 
     @override
     def build_network(self, example_shape: tuple[int, ...]) -> nn.Module:
         return MyNetwork(example_shape[0], self.num_classes)
 ```
+
+**Class attributes:**
+- `num_classes`: Number of segmentation classes (default: `1`)
+- `include_bg`: Whether to include background in Dice loss computation (default: `True`)
+
+:::{tip}
+Set `include_bg=False` when training multiclass segmentation where background dominates. This focuses the Dice loss on foreground classes and often improves segmentation quality.
+:::
 
 ## Sliding Window Trainer
 
