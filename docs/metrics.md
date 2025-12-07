@@ -91,9 +91,23 @@ dice = soft_dice_coefficient(output, label)
 - `output`: Float prediction tensor (typically after sigmoid)
 - `label`: Float ground truth tensor
 - `smooth`: Smoothing constant to avoid division by zero (default: `1e-5`)
+- `include_bg`: Whether to include background class (channel 0) in computation (default: `True`)
+
+**Multiclass usage:**
+```python
+# Multiclass prediction: (batch, num_classes, H, W)
+output = torch.rand(2, 4, 128, 128)  # 4 classes including background
+label = torch.zeros(2, 4, 128, 128)
+
+# Include all classes (default)
+dice_all = soft_dice_coefficient(output, label, include_bg=True)
+
+# Exclude background (class 0)
+dice_fg = soft_dice_coefficient(output, label, include_bg=False)
+```
 
 :::{tip}
-Soft Dice is primarily used as a differentiable loss function during training, not for evaluation.
+Soft Dice is primarily used as a differentiable loss function during training, not for evaluation. Set `include_bg=False` when background dominates and you want to focus on foreground classes.
 :::
 
 ### Accuracy

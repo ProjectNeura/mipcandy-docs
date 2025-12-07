@@ -278,6 +278,38 @@ trainer.train(100)
 - **Scheduler**: [`AbsoluteLinearLR`](#mipcandy.common.optim.lr_scheduler.AbsoluteLinearLR) with linear decay
 - **Preview Generation**: Automatic 2D/3D visualization with overlays
 
+### DiceBCELossWithLogits
+
+The default loss function supports both binary and multiclass segmentation:
+
+**Parameters:**
+- `num_classes`: Number of output classes (1 for binary, >1 for multiclass)
+- `lambda_bce`: Weight for BCE loss (default: `0.5`)
+- `lambda_soft_dice`: Weight for Dice loss (default: `1.0`)
+- `smooth`: Smoothing constant for Dice (default: `1e-5`)
+- `include_bg`: Include background in Dice computation (default: `True`)
+
+**Binary segmentation:**
+```python
+from mipcandy import DiceBCELossWithLogits
+
+criterion = DiceBCELossWithLogits(num_classes=1)
+# labels: (B, 1, H, W) float tensor
+```
+
+**Multiclass segmentation:**
+```python
+criterion = DiceBCELossWithLogits(num_classes=4)
+
+# Supports two label formats:
+# 1. One-hot encoded: (B, num_classes, H, W) float tensor
+# 2. Class indices: (B, 1, H, W) int tensor - automatically converted to one-hot
+```
+
+:::{note}
+When `num_classes > 1` and labels have shape `(B, 1, H, W)`, the loss function automatically converts integer class indices to one-hot encoding internally. This allows using the same label format as standard segmentation datasets.
+:::
+
 ### Preview Visualization
 
 The segmentation trainer automatically generates preview images comparing expected vs. actual predictions:
@@ -310,11 +342,20 @@ from mipcandy import SegmentationTrainer
 
 class MySegTrainer(SegmentationTrainer):
     num_classes: int = 3  # Multi-class segmentation
+    include_bg: bool = False  # Exclude background from Dice computation
 
     @override
     def build_network(self, example_shape: tuple[int, ...]) -> nn.Module:
         return MyNetwork(example_shape[0], self.num_classes)
 ```
+
+**Class attributes:**
+- `num_classes`: Number of segmentation classes (default: `1`)
+- `include_bg`: Whether to include background in Dice loss computation (default: `True`)
+
+:::{tip}
+Set `include_bg=False` when training multiclass segmentation where background dominates. This focuses the Dice loss on foreground classes and often improves segmentation quality.
+:::
 
 ## Sliding Window Trainer
 
@@ -685,6 +726,78 @@ class MyTrainer(Trainer):
 ```
 
 The padding module is automatically applied to inputs during training and validation.
+
+### Training Recovery
+
+Resume interrupted training sessions using `recover_from()` and `continue_training()`:
+
+```python
+from mipcandy_bundles.unet import UNetTrainer
+
+# Create trainer with same configuration
+trainer = UNetTrainer("experiments", train_loader, val_loader, device="cuda")
+
+# Recover from a specific experiment
+trainer.recover_from("20251201-14-a3f2")
+
+# Continue training for additional epochs
+trainer.continue_training(50)  # Add 50 more epochs
+```
+
+**How it works:**
+1. `recover_from(experiment_id)` loads:
+   - Saved metrics history
+   - Training tracker state (best score, epoch count)
+   - Training arguments from the original run
+
+2. `continue_training(num_epochs)` resumes with:
+   - Model loaded from `checkpoint_latest.pth`
+   - Optimizer and scheduler states restored
+   - Metrics continuing from where training stopped
+
+**Use cases:**
+
+Recovering from crashes:
+```python
+# Original training crashed at epoch 75
+trainer = UNetTrainer("experiments", train_loader, val_loader, device="cuda")
+trainer.recover_from("20251201-14-a3f2")
+trainer.continue_training(25)  # Complete remaining 25 epochs
+```
+
+Extending successful training:
+```python
+# Model still improving at epoch 100, extend training
+trainer.recover_from("20251201-14-a3f2")
+trainer.continue_training(100)  # Add 100 more epochs
+```
+
+:::{note}
+Recovery requires the experiment folder to exist with `checkpoint_latest.pth`, `optimizer.pth`, `scheduler.pth`, and `criterion.pth` files.
+:::
+
+### Loading Toolbox
+
+Load a complete training toolbox from a saved experiment:
+
+```python
+trainer = UNetTrainer("experiments", train_loader, val_loader, device="cuda")
+trainer.recover_from("20251201-14-a3f2")
+
+# Load toolbox with model, optimizer, scheduler, criterion
+toolbox = trainer.load_toolbox(num_epochs=100, example_shape=(1, 256, 256))
+
+# Access individual components
+model = toolbox.model
+optimizer = toolbox.optimizer
+scheduler = toolbox.scheduler
+criterion = toolbox.criterion
+```
+
+This is useful for:
+- Custom inference pipelines
+- Fine-tuning on new data
+- Analyzing trained models
 
 ## Metrics Display
 

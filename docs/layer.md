@@ -123,7 +123,7 @@ block1 = ConfigurableBlock(32, 64)
 block2 = ConfigurableBlock(32, 64, norm=LayerT(nn.GroupNorm, num_groups=8))
 
 # Custom activation
-block3 = ConfigurableBlock(32, 64, activation=LayerT(nn.GELU))
+block3 = ConfigurableBlock(32, 64, act=LayerT(nn.GELU))
 ```
 
 ## Device Management

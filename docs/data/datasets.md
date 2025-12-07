@@ -10,6 +10,7 @@ The dataset module offers a flexible hierarchy of dataset classes tailored for m
 
 ```
 _AbstractDataset (base)
+├── ComposeDataset
 ├── UnsupervisedDataset
 │   ├── DatasetFromMemory
 │   ├── PathBasedUnsupervisedDataset
@@ -22,6 +23,7 @@ _AbstractDataset (base)
     │   └── NNUNetDataset
     ├── BinarizedDataset
     ├── ROIDataset
+    │   └── RandomROIDataset
     └── (user custom datasets)
 ```
 
@@ -467,6 +469,62 @@ labels = DatasetFromMemory(label_tensors, device="cuda")
 dataset = MergedDataset(images, labels, device="cuda")
 ```
 
+#### ComposeDataset
+
+Dataset that concatenates multiple datasets into a single unified dataset.
+
+**Parameters:**
+- `bases`: Sequence of supervised or unsupervised datasets to compose
+- `device`: Device placement, default: `"cpu"`
+
+**Use cases:**
+- Combining multiple data sources (e.g., datasets from different hospitals)
+- Merging training data from multiple studies
+- Creating larger datasets from smaller subsets
+
+**Examples:**
+
+Combining multiple datasets:
+```python
+from mipcandy import NNUNetDataset
+from mipcandy.data.dataset import ComposeDataset
+
+# Load datasets from different sources
+dataset_a = NNUNetDataset("hospital_a/", device="cuda")
+dataset_b = NNUNetDataset("hospital_b/", device="cuda")
+dataset_c = NNUNetDataset("hospital_c/", device="cuda")
+
+# Compose into single dataset
+composed = ComposeDataset([dataset_a, dataset_b, dataset_c], device="cuda")
+
+print(f"Total samples: {len(composed)}")  # Sum of all dataset lengths
+
+# Access samples seamlessly
+image, label = composed[0]  # From dataset_a
+image, label = composed[len(dataset_a)]  # First sample from dataset_b
+```
+
+Multi-center study:
+```python
+from mipcandy import NNUNetDataset
+from mipcandy.data.dataset import ComposeDataset
+from torch.utils.data import DataLoader
+
+# Datasets from multiple centers
+centers = ["center_1", "center_2", "center_3", "center_4"]
+datasets = [NNUNetDataset(f"{c}/", device="cuda") for c in centers]
+
+# Compose all centers
+full_dataset = ComposeDataset(datasets, device="cuda")
+
+# Use with DataLoader
+loader = DataLoader(full_dataset, batch_size=8, shuffle=True)
+```
+
+:::{note}
+[`ComposeDataset`](#mipcandy.data.dataset.ComposeDataset) does not support `fold()` directly. To use K-fold cross validation, fold individual datasets before composing, or compose first and use a custom splitting strategy.
+:::
+
 ## K-Fold Cross Validation
 
 All [`SupervisedDataset`](#mipcandy.data.dataset.SupervisedDataset) instances have built-in K-fold cross validation support through the `fold()` method.
@@ -545,7 +603,8 @@ print(len(val))    # Full dataset size
 Splits dataset sequentially into 5 equal parts:
 
 ```python
-from mipcandy import NNUNetDataset, OrderedKFPicker
+from mipcandy import NNUNetDataset
+from mipcandy.data.dataset import OrderedKFPicker
 
 dataset = NNUNetDataset("dataset/", device="cuda")
 
@@ -571,7 +630,8 @@ train, val = dataset.fold(fold=0, picker=OrderedKFPicker)
 Randomly samples validation indices:
 
 ```python
-from mipcandy import NNUNetDataset, RandomKFPicker
+from mipcandy import NNUNetDataset
+from mipcandy.data.dataset import RandomKFPicker
 
 dataset = NNUNetDataset("dataset/", device="cuda")
 
@@ -774,7 +834,7 @@ Medical images often have:
 The [`inspect()`](#mipcandy.data.inspection.inspect) function automatically analyzes a dataset:
 
 ```python
-def inspect(dataset: SupervisedDataset, *, background: int = 0) -> InspectionAnnotations:
+def inspect(dataset: SupervisedDataset, *, background: int = 0, console: Console = Console()) -> InspectionAnnotations:
 ```
 
 ```python
@@ -792,6 +852,7 @@ print(f"Inspected {len(annotations)} cases")
 **Parameters:**
 - `dataset`: Any [`SupervisedDataset`](#mipcandy.data.dataset.SupervisedDataset)
 - `background`: Background class ID (default: `0`)
+- `console`: Rich console for progress display (default: `Console()`)
 
 **Returns:** [`InspectionAnnotations`](#mipcandy.data.inspection.InspectionAnnotations) object
 
@@ -1068,22 +1129,86 @@ for images, labels in loader:
 - Inherits device from annotations
 - Does not support `fold()` (fold before inspection)
 
+### RandomROIDataset
+
+Extended ROI dataset with random patch sampling and foreground oversampling, designed for more effective training on datasets with sparse foreground regions.
+
+```python
+from mipcandy import NNUNetDataset, inspect, RandomROIDataset
+from torch.utils.data import DataLoader
+
+# Load and inspect dataset
+dataset = NNUNetDataset("dataset/", device="cuda")
+annotations = inspect(dataset)
+
+# Create RandomROIDataset with foreground oversampling
+roi_dataset = RandomROIDataset(
+    annotations,
+    percentile=0.95,
+    foreground_oversample_percentage=0.33  # 33% of patches guaranteed to contain foreground
+)
+
+loader = DataLoader(roi_dataset, batch_size=4, shuffle=True)
+```
+
+**Parameters:**
+- `annotations`: [`InspectionAnnotations`](#mipcandy.data.inspection.InspectionAnnotations) object
+- `percentile`: Percentile for ROI size determination (default: `0.95`)
+- `foreground_oversample_percentage`: Probability of forcing foreground in patch center (default: `0.33`)
+- `min_foreground_samples`: Minimum foreground voxels to cache per case (default: `500`)
+- `max_foreground_samples`: Maximum foreground voxels to cache per case (default: `10000`)
+- `min_percent_coverage`: Minimum percentage of foreground to sample (default: `0.01`)
+
+**Behavior:**
+
+Unlike [`ROIDataset`](#mipcandy.data.inspection.ROIDataset) which always centers patches on the foreground center:
+- With probability `foreground_oversample_percentage`, samples a random foreground voxel and centers the patch there
+- Otherwise, samples a completely random patch location within the image bounds
+- Caches foreground locations for efficient repeated sampling
+
+**Use cases:**
+
+Sparse foreground (e.g., small tumors):
+```python
+# High oversampling for very sparse foreground
+roi_dataset = RandomROIDataset(
+    annotations,
+    foreground_oversample_percentage=0.5  # 50% foreground-centered
+)
+```
+
+Dense foreground (e.g., organ segmentation):
+```python
+# Lower oversampling when foreground is common
+roi_dataset = RandomROIDataset(
+    annotations,
+    foreground_oversample_percentage=0.2  # 20% foreground-centered
+)
+```
+
+:::{tip}
+[`RandomROIDataset`](#mipcandy.data.inspection.RandomROIDataset) is particularly effective for class-imbalanced datasets where foreground regions occupy a small fraction of the image. The random sampling helps the model see more varied contexts around the target structures.
+:::
+
 ### Saving and Loading Annotations
 
 Save inspection results to avoid re-computation:
 
 ```python
-from mipcandy import inspect, NNUNetDataset
+from mipcandy import inspect, load_inspection_annotations, NNUNetDataset
 
-# Inspect and save
+# Inspect and save (JSON format)
 dataset = NNUNetDataset("dataset/", device="cuda")
 annotations = inspect(dataset)
-annotations.save("annotations.csv")
+annotations.save("annotations.json")
 
-# Load later (note: requires dataset reference)
-# from mipcandy import load_inspection_annotations
-# annotations = load_inspection_annotations("annotations.csv")
+# Load later (requires same dataset reference)
+loaded_annotations = load_inspection_annotations("annotations.json", dataset)
 ```
+
+:::{note}
+Annotations are saved in JSON format (not CSV). The `load_inspection_annotations()` function requires the original dataset as a parameter to properly reconstruct the annotations with data access capability.
+:::
 
 ### Complete Patch-based Training Example
 

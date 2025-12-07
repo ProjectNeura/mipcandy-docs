@@ -338,10 +338,10 @@ def build_restoring_module(self, padding_module) -> nn.Module | None:
 Predictors work seamlessly with datasets:
 
 ```python
-from mipcandy import UnsupervisedDataset
+from mipcandy import SimpleDataset
 
 # Create dataset
-dataset = UnsupervisedDataset("test_images/", device="cuda")
+dataset = SimpleDataset("test_images/", device="cuda")
 
 # Predict entire dataset
 outputs = predictor.predict(dataset)
