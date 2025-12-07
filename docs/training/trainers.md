@@ -278,6 +278,38 @@ trainer.train(100)
 - **Scheduler**: [`AbsoluteLinearLR`](#mipcandy.common.optim.lr_scheduler.AbsoluteLinearLR) with linear decay
 - **Preview Generation**: Automatic 2D/3D visualization with overlays
 
+### DiceBCELossWithLogits
+
+The default loss function supports both binary and multiclass segmentation:
+
+**Parameters:**
+- `num_classes`: Number of output classes (1 for binary, >1 for multiclass)
+- `lambda_bce`: Weight for BCE loss (default: `0.5`)
+- `lambda_soft_dice`: Weight for Dice loss (default: `1.0`)
+- `smooth`: Smoothing constant for Dice (default: `1e-5`)
+- `include_bg`: Include background in Dice computation (default: `True`)
+
+**Binary segmentation:**
+```python
+from mipcandy import DiceBCELossWithLogits
+
+criterion = DiceBCELossWithLogits(num_classes=1)
+# labels: (B, 1, H, W) float tensor
+```
+
+**Multiclass segmentation:**
+```python
+criterion = DiceBCELossWithLogits(num_classes=4)
+
+# Supports two label formats:
+# 1. One-hot encoded: (B, num_classes, H, W) float tensor
+# 2. Class indices: (B, 1, H, W) int tensor - automatically converted to one-hot
+```
+
+:::{note}
+When `num_classes > 1` and labels have shape `(B, 1, H, W)`, the loss function automatically converts integer class indices to one-hot encoding internally. This allows using the same label format as standard segmentation datasets.
+:::
+
 ### Preview Visualization
 
 The segmentation trainer automatically generates preview images comparing expected vs. actual predictions:
