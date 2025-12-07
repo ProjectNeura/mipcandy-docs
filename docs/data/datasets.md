@@ -10,6 +10,7 @@ The dataset module offers a flexible hierarchy of dataset classes tailored for m
 
 ```
 _AbstractDataset (base)
+├── ComposeDataset
 ├── UnsupervisedDataset
 │   ├── DatasetFromMemory
 │   ├── PathBasedUnsupervisedDataset
@@ -22,6 +23,7 @@ _AbstractDataset (base)
     │   └── NNUNetDataset
     ├── BinarizedDataset
     ├── ROIDataset
+    │   └── RandomROIDataset
     └── (user custom datasets)
 ```
 
@@ -466,6 +468,60 @@ labels = DatasetFromMemory(label_tensors, device="cuda")
 
 dataset = MergedDataset(images, labels, device="cuda")
 ```
+
+#### ComposeDataset
+
+Dataset that concatenates multiple datasets into a single unified dataset.
+
+**Parameters:**
+- `bases`: Sequence of supervised or unsupervised datasets to compose
+- `device`: Device placement, default: `"cpu"`
+
+**Use cases:**
+- Combining multiple data sources (e.g., datasets from different hospitals)
+- Merging training data from multiple studies
+- Creating larger datasets from smaller subsets
+
+**Examples:**
+
+Combining multiple datasets:
+```python
+from mipcandy import NNUNetDataset, ComposeDataset
+
+# Load datasets from different sources
+dataset_a = NNUNetDataset("hospital_a/", device="cuda")
+dataset_b = NNUNetDataset("hospital_b/", device="cuda")
+dataset_c = NNUNetDataset("hospital_c/", device="cuda")
+
+# Compose into single dataset
+composed = ComposeDataset([dataset_a, dataset_b, dataset_c], device="cuda")
+
+print(f"Total samples: {len(composed)}")  # Sum of all dataset lengths
+
+# Access samples seamlessly
+image, label = composed[0]  # From dataset_a
+image, label = composed[len(dataset_a)]  # First sample from dataset_b
+```
+
+Multi-center study:
+```python
+from mipcandy import NNUNetDataset, ComposeDataset
+from torch.utils.data import DataLoader
+
+# Datasets from multiple centers
+centers = ["center_1", "center_2", "center_3", "center_4"]
+datasets = [NNUNetDataset(f"{c}/", device="cuda") for c in centers]
+
+# Compose all centers
+full_dataset = ComposeDataset(datasets, device="cuda")
+
+# Use with DataLoader
+loader = DataLoader(full_dataset, batch_size=8, shuffle=True)
+```
+
+:::{note}
+[`ComposeDataset`](#mipcandy.data.dataset.ComposeDataset) does not support `fold()` directly. To use K-fold cross validation, fold individual datasets before composing, or compose first and use a custom splitting strategy.
+:::
 
 ## K-Fold Cross Validation
 
