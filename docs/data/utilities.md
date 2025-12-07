@@ -290,7 +290,7 @@ Convert class ID tensors to one-hot encoded logits.
 
 #### Returns
 
-One-hot encoded tensor with shape `(num_classes, *spatial_dims)`
+One-hot encoded tensor with shape `(B, num_classes, *spatial_dims)`
 
 #### Usage
 
@@ -298,18 +298,18 @@ One-hot encoded tensor with shape `(num_classes, *spatial_dims)`
 from mipcandy import convert_ids_to_logits
 import torch
 
-# 2D segmentation
-ids = torch.randint(0, 3, (256, 256))
+# 2D segmentation (requires batch dimension)
+ids = torch.randint(0, 3, (1, 256, 256)).int()  # (B, H, W)
 logits = convert_ids_to_logits(ids, d=2, num_classes=3)
-print(logits.shape)  # (3, 256, 256)
+print(logits.shape)  # (1, 3, 256, 256)
 
 # 3D segmentation
-ids_3d = torch.randint(0, 4, (64, 128, 128))
+ids_3d = torch.randint(0, 4, (1, 64, 128, 128)).int()  # (B, D, H, W)
 logits_3d = convert_ids_to_logits(ids_3d, d=3, num_classes=4)
-print(logits_3d.shape)  # (4, 64, 128, 128)
+print(logits_3d.shape)  # (1, 4, 64, 128, 128)
 
 # Verify one-hot encoding
-assert (logits.sum(dim=0) == 1).all()
+assert (logits.sum(dim=1) == 1).all()
 ```
 
 ### convert_logits_to_ids()
