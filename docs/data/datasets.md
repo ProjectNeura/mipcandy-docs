@@ -1190,17 +1190,20 @@ roi_dataset = RandomROIDataset(
 Save inspection results to avoid re-computation:
 
 ```python
-from mipcandy import inspect, NNUNetDataset
+from mipcandy import inspect, load_inspection_annotations, NNUNetDataset
 
-# Inspect and save
+# Inspect and save (JSON format)
 dataset = NNUNetDataset("dataset/", device="cuda")
 annotations = inspect(dataset)
-annotations.save("annotations.csv")
+annotations.save("annotations.json")
 
-# Load later (note: requires dataset reference)
-# from mipcandy import load_inspection_annotations
-# annotations = load_inspection_annotations("annotations.csv")
+# Load later (requires same dataset reference)
+loaded_annotations = load_inspection_annotations("annotations.json", dataset)
 ```
+
+:::{note}
+Annotations are saved in JSON format (not CSV). The `load_inspection_annotations()` function requires the original dataset as a parameter to properly reconstruct the annotations with data access capability.
+:::
 
 ### Complete Patch-based Training Example
 
