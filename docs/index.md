@@ -26,23 +26,28 @@ pip install "mipcandy[all]"
 ```python
 from typing import override
 
-import torch
-from mipcandy_bundles.unet import UNetTrainer
+from monai.networks.nets import BasicUNet
+from monai.transforms import Resized
+from torch import nn
 from torch.utils.data import DataLoader
+from torchvision.transforms import Compose
 
-from mipcandy import download_dataset, NNUNetDataset
+from mipcandy import SegmentationTrainer, AmbiguousShape, download_dataset, JointTransform, MONAITransform, Normalize,
+    NNUNetDataset
 
 
-class PH2(NNUNetDataset):
+class UNetTrainer(SegmentationTrainer):
     @override
-    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        image, label = super().load(idx)
-        return image.squeeze(0).permute(2, 0, 1), label
+    def build_network(self, example_shape: AmbiguousShape) -> nn.Module:
+        return BasicUNet(2, example_shape[0], self.num_classes)
 
 
 download_dataset("nnunet_datasets/PH2", "tutorial/datasets/PH2")
-dataset, val_dataset = PH2("tutorial/datasets/PH2", device="cuda").fold()
-dataloader = DataLoader(dataset, 1, shuffle=True)
+transform = JointTransform(transform=Compose([
+    Resized(("image", "label"), (560, 768)), MONAITransform(Normalize(domain=(0, 1), strict=True))
+]))
+dataset, val_dataset = NNUNetDataset("tutorial/datasets/PH2", transform=transform, device="cuda").fold()
+dataloader = DataLoader(dataset, 8, shuffle=True)
 val_dataloader = DataLoader(val_dataset, 1, shuffle=False)
 trainer = UNetTrainer("tutorial", dataloader, val_dataloader, device="cuda")
 trainer.train(1000, note="a nnU-Net style example")
