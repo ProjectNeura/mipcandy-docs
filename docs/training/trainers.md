@@ -26,7 +26,7 @@ class TrainerToolbox:
     optimizer: optim.Optimizer
     scheduler: optim.lr_scheduler.LRScheduler
     criterion: nn.Module
-    ema: optim.swa_utils.AveragedModel | None = None
+    ema: nn.Module | None = None
 ```
 
 This toolbox is passed to training methods, providing clean access to all components needed during the forward and backward passes.
@@ -96,6 +96,22 @@ from mipcandy import DiceBCELossWithLogits
 def build_criterion(self) -> nn.Module:
     return DiceBCELossWithLogits(num_classes=1)
 ```
+
+#### `build_ema(model: nn.Module) -> nn.Module`
+
+Creates the Exponential Moving Average model for validation.
+
+```python
+from torch import nn, optim
+
+@override
+def build_ema(self, model: nn.Module) -> nn.Module:
+    return optim.swa_utils.AveragedModel(model)
+```
+
+:::{note}
+[`SegmentationTrainer`](#mipcandy.presets.segmentation.SegmentationTrainer) provides a default implementation using `AveragedModel`.
+:::
 
 #### `backward(images, labels, toolbox) -> tuple[float, dict[str, float]]`
 
@@ -531,6 +547,7 @@ trainer.train(
     num_epochs=100,
     note="Experiment description",
     num_checkpoints=10,
+    compile_model=True,
     ema=True,
     seed=42,
     early_stop_tolerance=10,
@@ -546,6 +563,7 @@ trainer.train(
 - **`num_epochs: int`** - Total number of training epochs
 - **`note: str`** - Description logged in experiment folder (default: "")
 - **`num_checkpoints: int`** - Number of evenly-spaced checkpoints to save (default: 5)
+- **`compile_model: bool`** - Enable `torch.compile()` for optimized model execution (default: True)
 - **`ema: bool`** - Enable Exponential Moving Average of model weights (default: True)
 - **`seed: int | None`** - Random seed for reproducibility; random if None (default: None)
 - **`early_stop_tolerance: int`** - Stop if validation score doesn't improve for N epochs (default: 5)
@@ -570,6 +588,23 @@ trainer.train_with_settings(100, note="Override default note")
 ```
 
 The `train_with_settings()` method merges settings from `settings.yml` with provided kwargs.
+
+### Model Compilation
+
+When `compile_model=True`, MIPCandy uses `torch.compile()` to optimize the model for faster execution. This requires a GPU with sufficient compute capability:
+
+| CUDA Version | Minimum Compute Capability |
+|--------------|---------------------------|
+| cu118, cu121, cu124 | 7.0 |
+| cu128+ | 7.5 |
+
+:::{warning}
+GPUs like P100 (CC 6.0) or GTX 1080 Ti (CC 6.1) do not meet these requirements. If you encounter an error like `CUDA capability >= 7.0`, disable model compilation:
+
+```python
+trainer.train(100, compile_model=False)
+```
+:::
 
 ## Frontend Integration
 
