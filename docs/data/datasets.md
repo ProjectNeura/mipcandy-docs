@@ -588,7 +588,7 @@ def fold(
 **Parameters:**
 - `fold`: Which fold to use as validation set
   - `0`, `1`, `2`, `3`, `4`: Use specific fold (0-4) as validation
-  - `"all"`: Use all samples for validation (training set is empty)
+  - `"all"`: Select every 5th sample as validation (equivalent to fold 0 stride pattern)
 - `picker`: Strategy for selecting fold samples
   - `OrderedKFPicker`: Sequential splitting (default, reproducible)
   - `RandomKFPicker`: Random sampling for validation fold
@@ -616,13 +616,13 @@ train_2, val_2 = dataset.fold(fold=2)
 # ... and so on for folds 3 and 4
 ```
 
-Use all samples for evaluation:
+Using `fold="all"` with `OrderedKFPicker`:
 
 ```python
-# Both train and val contain all samples
+# "all" selects every 5th sample as validation (~20%)
 train, val = dataset.fold(fold="all")
-print(len(train))  # Full dataset size
-print(len(val))    # Full dataset size
+print(len(train))  # ~80% of dataset
+print(len(val))    # ~20% of dataset
 ```
 
 ### Picker Strategies
@@ -722,7 +722,7 @@ print(f"Std score: {statistics.stdev(fold_results):.4f}")
 
 ### Training on Full Dataset
 
-After cross-validation, train final model on all data:
+After cross-validation, train final model on all data by using the dataset directly (without folding):
 
 ```python
 from mipcandy import NNUNetDataset
@@ -730,8 +730,8 @@ from torch.utils.data import DataLoader
 
 dataset = NNUNetDataset("dataset/", device="cuda")
 
-# Use all samples for training
-train_dataset, _ = dataset.fold(fold="all")
+# Use the full dataset for training
+train_dataset = dataset
 
 # Train final model
 train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
@@ -1086,7 +1086,7 @@ print(f"Expanded shape: {image_expanded.shape}")
 #### crop_roi()
 
 ```python
-def crop_roi(self, i: int, *, percentile: float = .95) -> tuple[torch.Tensor, torch.Tensor]:
+def crop_roi(self, i: int, *, clamp: bool = True, percentile: float = .95) -> tuple[torch.Tensor, torch.Tensor]:
 ```
 
 Extract ROI centered on foreground:
@@ -1110,7 +1110,7 @@ image_roi_99, label_roi_99 = annotations.crop_roi(0, percentile=0.99)
 #### roi()
 
 ```python
-def roi(self, i: int, *, percentile: float = .95) -> tuple[int, int, int, int] | tuple[int, int, int, int, int, int]:
+def roi(self, i: int, *, clamp: bool = True, percentile: float = .95) -> tuple[int, int, int, int] | tuple[int, int, int, int, int, int]:
 ```
 
 Get ROI bounding box without cropping:
@@ -1158,6 +1158,7 @@ for images, labels in loader:
 
 **Parameters:**
 - `annotations`: [`InspectionAnnotations`](#mipcandy.data.inspection.InspectionAnnotations) object
+- `clamp`: Whether to clamp ROI shape to minimum image size (default: `True`)
 - `percentile`: Percentile for ROI size determination (default: `0.95`)
 
 **Characteristics:**

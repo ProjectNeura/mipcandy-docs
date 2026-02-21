@@ -205,20 +205,26 @@ empty_cache("cuda")
 ### ensure_num_dimensions()
 
 ```python
-def ensure_num_dimensions(x: torch.Tensor, num_dimensions: int) -> torch.Tensor:
+def ensure_num_dimensions(x: torch.Tensor, num_dimensions: int, *, append_before: bool = True) -> torch.Tensor:
 ```
 
-Adjust tensor dimensions by adding or removing leading dimensions.
+Adjust tensor dimensions by adding or removing dimensions.
 
 #### Parameters
 
 - `x`: Input tensor
 - `num_dimensions`: Target number of dimensions
+- `append_before`: When `True` (default), adds/removes dimensions at the front. When `False`, adds/removes at the end.
 
 #### Behavior
 
+When `append_before=True` (default):
 - **Add dimensions**: Adds leading dimensions of size 1
 - **Remove dimensions**: Keeps trailing dimensions
+
+When `append_before=False`:
+- **Add dimensions**: Adds trailing dimensions of size 1
+- **Remove dimensions**: Keeps leading dimensions
 
 #### Usage
 
@@ -367,7 +373,7 @@ Convert class ID tensors to one-hot encoded logits.
 
 #### Returns
 
-One-hot encoded tensor with shape `(num_classes, *spatial_dims)`
+One-hot encoded tensor with shape `(B, num_classes, *spatial_dims)`
 
 **Input format:** The `ids` tensor must include a batch dimension. For `d=2`, the expected shape is `(B, H, W)`; for `d=3`, `(B, D, H, W)`. The tensor must have dtype `torch.int32`.
 

@@ -264,7 +264,7 @@ The [`overlay()`](#mipcandy.data.visualization.overlay) function combines images
 
 ```python
 def overlay(image: torch.Tensor, label: torch.Tensor, *, max_label_opacity: float = .5,
-            label_colorizer: ColorizeLabel | None = ColorizeLabel()) -> torch.Tensor:
+            label_colorizer: ColorizeLabel | None = ColorizeLabel(batch=False)) -> torch.Tensor:
 ```
 
 ### Basic Usage

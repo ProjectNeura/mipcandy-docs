@@ -282,10 +282,10 @@ The default implementations of `build_padding_module` and `build_restoring_modul
 Predictors work seamlessly with datasets:
 
 ```python
-from mipcandy.data import UnsupervisedDataset, PathBasedUnsupervisedDataset
+from mipcandy.data import SimpleDataset, PathBasedUnsupervisedDataset
 
 # Create dataset
-dataset = UnsupervisedDataset("test_images/", device="cuda")
+dataset = SimpleDataset("test_images/", is_label=False, device="cuda")
 
 # Predict entire dataset
 outputs = predictor.predict(dataset)
@@ -333,16 +333,16 @@ predictor.save_predictions(
 The output folder must already exist. `save_predictions` raises `FileNotFoundError` if the folder does not exist.
 :::
 
-**Automatic Naming Format:** `prediction_{i:0Nd}` where `N = ceil(log(num_cases))`
+**Automatic Naming Format:** `prediction_{i:0Nd}` where `N = ceil(ln(num_cases))` (natural logarithm).
 
 The file extension is chosen automatically based on tensor dimensionality:
 - `.png` for 3D tensors with 1 or 3 channels (2D images)
 - `.mha` for all other shapes (3D volumes)
 
 Example:
-- 5 cases: `prediction_0` to `prediction_4`
-- 100 cases: `prediction_00` to `prediction_99`
-- 1000 cases: `prediction_000` to `prediction_999`
+- 5 cases (`N=2`): `prediction_00` to `prediction_04`
+- 100 cases (`N=5`): `prediction_00000` to `prediction_00099`
+- 1000 cases (`N=7`): `prediction_0000000` to `prediction_0000999`
 
 ## Complete Example
 

@@ -129,8 +129,8 @@ where $p$ is the predicted tensor, $g$ is the ground truth tensor, and $\epsilon
 **Parameters:**
 
 - `smooth` -- Laplace smoothing constant added to both numerator and denominator to prevent division by zero and stabilize gradients. Default: `1`.
-- `batch_dice` -- When `True`, spatial and batch dimensions are aggregated together before computing the per-class score. When `False`, each sample in the batch is scored independently. Default: `True`.
-- `reduction` -- Aggregation method applied to the resulting per-class scores. Default: `"mean"`.
+- `batch_dice` -- When `True`, all dimensions (batch, spatial, and class) are aggregated into a single scalar Dice score. When `False`, Dice is computed per-sample per-class, yielding a `(B, C)` tensor before reduction. Default: `True`.
+- `reduction` -- Aggregation method applied to the resulting scores. Default: `"mean"`.
 
 **Example:**
 
@@ -251,5 +251,5 @@ binary_dice(outputs, labels)  # tensor(0.) -- computed normally
 ```
 
 :::{important}
-In `binary_dice`, the empty check applies per-sample before reduction: if a single sample has zero volume on both sides, that sample receives `if_empty`. In `dice_similarity_coefficient`, the check applies globally across all classes: if **any** class has a zero denominator, the entire result is replaced by `if_empty`.
+In `binary_dice`, the empty check compares the total `volume_sum` (across all samples) against zero. This works correctly for single-sample inputs (`B=1`); for multi-sample batches, the check triggers only when **all** samples are simultaneously empty. In `dice_similarity_coefficient`, the check applies globally across all classes: if **any** class has a zero denominator, the entire result is replaced by `if_empty`.
 :::
