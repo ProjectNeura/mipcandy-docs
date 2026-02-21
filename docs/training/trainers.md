@@ -4,13 +4,11 @@ A [`Trainer`](#mipcandy.training.Trainer) is where you define the training loop 
 
 ## Overview
 
-The trainer system in MIPCandy follows a hierarchical design:
+The trainer system in MIPCandy follows a two-level hierarchy:
 
 1. **Base Trainer** - Abstract base class defining the training framework
-2. **Sliding Trainer** - Extends base trainer with sliding window mechanism for large volumes
-3. **Segmentation Trainer** - Pre-configured trainer for segmentation tasks
-4. **Sliding Segmentation Trainer** - Combines sliding window with segmentation features
-5. **Model-specific Trainers** - Ready-to-use trainers like UNetTrainer and CMUNeXtTrainer
+2. **Segmentation Trainer** - Pre-configured trainer for segmentation tasks with deep supervision support
+3. **Model-specific Trainers** - Ready-to-use trainers like UNetTrainer and CMUNeXtTrainer (from bundles)
 
 ## TrainerToolbox
 
@@ -26,14 +24,59 @@ class TrainerToolbox:
     optimizer: optim.Optimizer
     scheduler: optim.lr_scheduler.LRScheduler
     criterion: nn.Module
-    ema: optim.swa_utils.AveragedModel | None = None
+    ema: nn.Module | None = None
 ```
 
 This toolbox is passed to training methods, providing clean access to all components needed during the forward and backward passes.
 
+## TrainerTracker
+
+[`TrainerTracker`](#mipcandy.training.TrainerTracker) is a dataclass that tracks training state across epochs:
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class TrainerTracker:
+    epoch: int = 0
+    best_score: float = float("-inf")
+    worst_case: int | None = None
+```
+
+The tracker maintains three pieces of state:
+
+- **`epoch`** - The current epoch number, used for recovery and progress tracking
+- **`best_score`** - The best validation score achieved so far, used for checkpoint saving
+- **`worst_case`** - The index of the worst-performing validation case in the current epoch, used for preview generation
+
+The trainer automatically updates the tracker during validation. When the worst validation case is identified, its input, label, and output tensors are saved so that preview images always show the hardest case.
+
 ## Base Trainer
 
-The base [`Trainer`](#mipcandy.training.Trainer) class provides a complete training framework. You need to implement several abstract methods to create a custom trainer:
+The base [`Trainer`](#mipcandy.training.Trainer) class provides a complete training framework. It inherits from [`WithPaddingModule`](#mipcandy.layer.WithPaddingModule) and [`WithNetwork`](#mipcandy.layer.WithNetwork).
+
+### Constructor
+
+```python
+Trainer(
+    trainer_folder: str | PathLike[str],
+    dataloader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    validation_dataloader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    *,
+    recoverable: bool = True,
+    profiler: bool = False,
+    device: torch.device | str = "cpu",
+    console: Console = Console()
+)
+```
+
+- **`trainer_folder`** - Root directory for experiment outputs
+- **`dataloader`** - Training data loader
+- **`validation_dataloader`** - Validation data loader (must have `batch_size=1`)
+- **`recoverable`** - Enable training recovery support (default: `True`)
+- **`profiler`** - Enable performance profiling (default: `False`)
+- **`device`** - Computation device (default: `"cpu"`)
+- **`console`** - Rich console for output (default: `Console()`)
 
 ### Required Abstract Methods
 
@@ -61,11 +104,11 @@ Creates the optimizer for training.
 
 ```python
 from torch import optim
-from mipcandy import Params
+from mipcandy.types import Params
 
 @override
 def build_optimizer(self, params: Params) -> optim.Optimizer:
-    return optim.AdamW(params, lr=1e-3, weight_decay=1e-4)
+    return optim.SGD(params, lr=1e-2, weight_decay=3e-5, momentum=.99, nesterov=True)
 ```
 
 #### `build_scheduler(optimizer: optim.Optimizer, num_epochs: int) -> optim.lr_scheduler.LRScheduler`
@@ -73,16 +116,15 @@ def build_optimizer(self, params: Params) -> optim.Optimizer:
 Creates the learning rate scheduler.
 
 ```python
-from mipcandy import AbsoluteLinearLR
+from mipcandy.common import PolyLRScheduler
 
 @override
 def build_scheduler(self, optimizer: optim.Optimizer, num_epochs: int) -> optim.lr_scheduler.LRScheduler:
-    # Linear decay: lr = kx + b
-    return AbsoluteLinearLR(optimizer, k=-8e-6 / len(self._dataloader), b=1e-2)
+    return PolyLRScheduler(optimizer, 1e-2, num_epochs * len(self._dataloader))
 ```
 
 :::{tip}
-[`AbsoluteLinearLR`](#mipcandy.common.optim.lr_scheduler.AbsoluteLinearLR) implements `lr = kx + b` with optional minimum learning rate and restart capability.
+[`PolyLRScheduler`](#mipcandy.common.optim.lr_scheduler.PolyLRScheduler) implements polynomial decay: `lr = initial_lr * (1 - step / max_steps) ^ exponent`. [`AbsoluteLinearLR`](#mipcandy.common.optim.lr_scheduler.AbsoluteLinearLR) implements linear decay: `lr = kx + b` with optional minimum learning rate and restart capability.
 :::
 
 #### `build_criterion() -> nn.Module`
@@ -90,12 +132,28 @@ def build_scheduler(self, optimizer: optim.Optimizer, num_epochs: int) -> optim.
 Creates the loss function.
 
 ```python
-from mipcandy import DiceBCELossWithLogits
+from mipcandy.common import DiceBCELossWithLogits
 
 @override
 def build_criterion(self) -> nn.Module:
-    return DiceBCELossWithLogits(num_classes=1)
+    return DiceBCELossWithLogits()
 ```
+
+#### `build_ema(model: nn.Module) -> nn.Module`
+
+Creates the Exponential Moving Average model for validation.
+
+```python
+from torch import nn, optim
+
+@override
+def build_ema(self, model: nn.Module) -> nn.Module:
+    return optim.swa_utils.AveragedModel(model)
+```
+
+:::{note}
+[`SegmentationTrainer`](#mipcandy.presets.segmentation.SegmentationTrainer) provides a default implementation using `AveragedModel`.
+:::
 
 #### `backward(images, labels, toolbox) -> tuple[float, dict[str, float]]`
 
@@ -112,26 +170,25 @@ def backward(self, images: torch.Tensor, labels: torch.Tensor,
 ```
 
 :::{important}
-The backward method should call `loss.backward()` but NOT call `optimizer.step()`. The base trainer handles optimizer stepping automatically.
+The backward method should call `loss.backward()` but NOT call `optimizer.step()`. The base trainer handles optimizer stepping automatically in `train_batch()`.
 :::
 
-#### `validate_case(image, label, toolbox) -> tuple[float, dict[str, float], torch.Tensor]`
+#### `validate_case(idx, image, label, toolbox) -> tuple[float, dict[str, float], torch.Tensor]`
 
-Validates a single case (without batch dimension).
+Validates a single case. The `idx` parameter is the case index in the validation set.
 
 ```python
 @override
-def validate_case(self, image: torch.Tensor, label: torch.Tensor,
+def validate_case(self, idx: int, image: torch.Tensor, label: torch.Tensor,
                   toolbox: TrainerToolbox) -> tuple[float, dict[str, float], torch.Tensor]:
     image, label = image.unsqueeze(0), label.unsqueeze(0)
-    with torch.no_grad():
-        prediction = (toolbox.ema if toolbox.ema else toolbox.model)(image)
-        loss, metrics = toolbox.criterion(prediction, label)
-    return -loss.item(), metrics, prediction.squeeze(0)
+    output = (toolbox.ema if toolbox.ema else toolbox.model)(image)
+    loss, metrics = toolbox.criterion(output, label)
+    return -loss.item(), metrics, output.squeeze(0)
 ```
 
 :::{note}
-The validation score is typically the negative loss (higher is better). The trainer tracks the best score for checkpoint saving.
+The validation score is typically the negative loss (higher is better). The trainer tracks the best score for checkpoint saving and automatically identifies the worst-performing case for preview generation.
 :::
 
 ### Experiment Management
@@ -149,14 +206,20 @@ trainer.train(100)
 This creates a timestamped experiment folder:
 ```
 experiments/
-└── UNetTrainer/
-    └── 20251101-14-a3f2/
-        ├── logs.txt
-        ├── metrics.csv
-        ├── checkpoint_best.pth
-        ├── checkpoint_latest.pth
-        ├── progress.png
-        └── ...
+  UNetTrainer/
+    20251101-14-a3f2/
+      logs.txt
+      metrics.csv
+      checkpoint_best.pth
+      checkpoint_latest.pth
+      checkpoint_0.pth
+      progress.png
+      state_dicts.pth
+      state_orb.json
+      worst_input.pt
+      worst_label.pt
+      worst_output.pt
+      ...
 ```
 
 The experiment ID format is `YYYYMMDD-HH-XXXX` where `XXXX` is a 4-character hash ensuring uniqueness.
@@ -176,7 +239,7 @@ Record metrics during training:
 
 ```python
 self.record("loss", 0.5)  # Record single metric
-self.record_all({"dice": 0.85, "iou": 0.78})  # Record multiple metrics
+self.record_all({"dice": [0.85], "iou": [0.78]})  # Record multiple metrics (averaged per epoch)
 ```
 
 Metrics are automatically:
@@ -195,16 +258,28 @@ The trainer automatically saves:
 trainer.train(100, num_checkpoints=10)  # Saves 10 evenly spaced checkpoints
 ```
 
+### Worst Validation Case Tracking
+
+During validation, the trainer automatically tracks the worst-performing case. For each validation case, if its score is lower than the current worst, the trainer saves:
+
+- `worst_input.pt` - The input tensor
+- `worst_label.pt` - The ground truth label
+- `worst_output.pt` - The model output
+
+When the best validation score improves, the saved worst case is used to generate preview images. This ensures previews always show the model's weakest prediction, giving the most informative visual feedback.
+
 ## Custom Trainer Example
 
-Here's a complete example of a custom trainer:
+Here is a complete example of a custom trainer built directly on the base `Trainer`:
 
 ```python
 from typing import override
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
-from mipcandy import Trainer, TrainerToolbox, Params, DiceBCELossWithLogits, AbsoluteLinearLR
+from mipcandy.training import Trainer, TrainerToolbox
+from mipcandy.types import Params
+from mipcandy.common import DiceBCELossWithLogits, PolyLRScheduler
 
 
 class SimpleUNet(nn.Module):
@@ -232,15 +307,19 @@ class MySegmentationTrainer(Trainer):
 
     @override
     def build_optimizer(self, params: Params) -> optim.Optimizer:
-        return optim.AdamW(params, lr=1e-3)
+        return optim.SGD(params, lr=1e-2, weight_decay=3e-5, momentum=.99, nesterov=True)
 
     @override
     def build_scheduler(self, optimizer: optim.Optimizer, num_epochs: int) -> optim.lr_scheduler.LRScheduler:
-        return AbsoluteLinearLR(optimizer, -8e-6 / len(self._dataloader), 1e-2)
+        return PolyLRScheduler(optimizer, 1e-2, num_epochs * len(self._dataloader))
 
     @override
     def build_criterion(self) -> nn.Module:
-        return DiceBCELossWithLogits(self.num_classes)
+        return DiceBCELossWithLogits()
+
+    @override
+    def build_ema(self, model: nn.Module) -> nn.Module:
+        return optim.swa_utils.AveragedModel(model)
 
     @override
     def backward(self, images: torch.Tensor, labels: torch.Tensor,
@@ -251,13 +330,12 @@ class MySegmentationTrainer(Trainer):
         return loss.item(), metrics
 
     @override
-    def validate_case(self, image: torch.Tensor, label: torch.Tensor,
+    def validate_case(self, idx: int, image: torch.Tensor, label: torch.Tensor,
                       toolbox: TrainerToolbox) -> tuple[float, dict[str, float], torch.Tensor]:
         image, label = image.unsqueeze(0), label.unsqueeze(0)
-        with torch.no_grad():
-            prediction = (toolbox.ema if toolbox.ema else toolbox.model)(image)
-            loss, metrics = toolbox.criterion(prediction, label)
-        return -loss.item(), metrics, prediction.squeeze(0)
+        output = (toolbox.ema if toolbox.ema else toolbox.model)(image)
+        loss, metrics = toolbox.criterion(output, label)
+        return -loss.item(), metrics, output.squeeze(0)
 
 
 # Usage
@@ -269,13 +347,32 @@ trainer.train(100)
 
 ## Segmentation Trainer
 
-[`SegmentationTrainer`](#mipcandy.presets.segmentation.SegmentationTrainer) provides pre-configured defaults for segmentation tasks. It implements all required methods with sensible defaults:
+[`SegmentationTrainer`](#mipcandy.presets.segmentation.SegmentationTrainer) provides pre-configured defaults for segmentation tasks. It implements all required abstract methods with sensible defaults, so you only need to implement `build_network()`.
+
+### Class Attributes
+
+```python
+class SegmentationTrainer(Trainer, metaclass=ABCMeta):
+    num_classes: int = 1
+    include_background: bool = True
+    deep_supervision: bool = False
+    deep_supervision_scales: Sequence[float] | None = None
+    deep_supervision_weights: Sequence[float] | None = None
+```
+
+- **`num_classes`** - Number of segmentation classes. Set to `1` for binary segmentation, `>= 2` for multiclass (default: `1`)
+- **`include_background`** - Whether to include the background class in loss computation. Must be `True` for binary segmentation (default: `True`)
+- **`deep_supervision`** - Enable deep supervision training (default: `False`)
+- **`deep_supervision_scales`** - List of scale factors for deep supervision outputs. Used to auto-compute weights if `deep_supervision_weights` is not set
+- **`deep_supervision_weights`** - Explicit weight factors for each supervision level. If not set but `deep_supervision_scales` is provided, weights are computed as `1 / 2^i` normalized to sum to 1
 
 ### Pre-configured Components
 
-- **Loss Function**: [`DiceBCELossWithLogits`](#mipcandy.common.optim.loss.DiceBCELossWithLogits) - Combines Dice loss and Binary Cross Entropy
-- **Optimizer**: `AdamW` with default parameters
-- **Scheduler**: [`AbsoluteLinearLR`](#mipcandy.common.optim.lr_scheduler.AbsoluteLinearLR) with linear decay
+- **Loss Function**: [`DiceBCELossWithLogits`](#mipcandy.common.optim.loss.DiceBCELossWithLogits) for binary segmentation (`num_classes < 2`), or [`DiceCELossWithLogits`](#mipcandy.common.optim.loss.DiceCELossWithLogits) for multiclass segmentation (`num_classes >= 2`)
+- **Optimizer**: `SGD` with `lr=1e-2`, `weight_decay=3e-5`, `momentum=0.99`, `nesterov=True`
+- **Scheduler**: [`PolyLRScheduler`](#mipcandy.common.optim.lr_scheduler.PolyLRScheduler) with polynomial decay over total training steps
+- **EMA**: `AveragedModel` from `torch.optim.swa_utils`
+- **Gradient Clipping**: `clip_grad_norm_` with max norm of `12`
 - **Preview Generation**: Automatic 2D/3D visualization with overlays
 
 ### DiceBCELossWithLogits
@@ -330,6 +427,19 @@ def save_preview(self, image: torch.Tensor, label: torch.Tensor, output: torch.T
 For 3D volumes, set `preview_quality` to control the maximum number of voxels rendered (default: 0.75 million voxels).
 :::
 
+### Class Percentages
+
+The `class_percentages()` method computes the distribution of class labels in a segmentation tensor:
+
+```python
+def class_percentages(self, ids: torch.Tensor) -> dict[int, float]:
+    bin_count = torch.bincount(ids.flatten().long(), minlength=self.num_classes)
+    distribution = (bin_count / bin_count.sum()).cpu().tolist()
+    return dict(enumerate(distribution))
+```
+
+During validation, this is used to report the percentage of each class in both the ground truth label and the model prediction. The companion `format_class_percentages()` static method formats these into metric dictionaries with keys like `% label class 0`, `% output class 1`, etc.
+
 ### Customization
 
 You only need to implement `build_network()`:
@@ -337,7 +447,7 @@ You only need to implement `build_network()`:
 ```python
 from typing import override
 from torch import nn
-from mipcandy import SegmentationTrainer
+from mipcandy.presets.segmentation import SegmentationTrainer
 
 
 class MySegTrainer(SegmentationTrainer):
@@ -349,150 +459,136 @@ class MySegTrainer(SegmentationTrainer):
         return MyNetwork(example_shape[0], self.num_classes)
 ```
 
-**Class attributes:**
-- `num_classes`: Number of segmentation classes (default: `1`)
-- `include_bg`: Whether to include background in Dice loss computation (default: `True`)
-
 :::{tip}
-Set `include_bg=False` when training multiclass segmentation where background dominates. This focuses the Dice loss on foreground classes and often improves segmentation quality.
+Set `include_background=False` when training multiclass segmentation where background dominates. This focuses the Dice loss on foreground classes and often improves segmentation quality.
 :::
 
-## Sliding Window Trainer
+### Loss Function Selection
 
-[`SlidingTrainer`](#mipcandy.training.SlidingTrainer) extends the base trainer with sliding window capability for processing large medical volumes that don't fit in GPU memory.
+The loss function is automatically selected based on `num_classes`:
+
+```python
+@override
+def build_criterion(self) -> nn.Module:
+    if self.num_classes < 2:
+        loss = DiceBCELossWithLogits()          # Binary: Dice + BCE
+    else:
+        loss = DiceCELossWithLogits(             # Multiclass: Dice + CE
+            self.num_classes, include_background=self.include_background
+        )
+    # Wrapped with DeepSupervisionWrapper if deep_supervision is enabled
+    ...
+```
+
+## Deep Supervision
+
+[`DeepSupervisionWrapper`](#mipcandy.presets.segmentation.DeepSupervisionWrapper) is an `nn.Module` that wraps a loss function to support multi-scale supervision during training.
 
 ### How It Works
 
-1. **Windowing**: The large volume is split into overlapping windows
-2. **Processing**: Each window is processed independently
-3. **Reconstruction**: Windows are merged back using Gaussian-weighted averaging
-
-### Window Shape
-
-Define the window size by implementing `get_window_shape()`:
+Deep supervision computes the loss at multiple resolutions. The model produces outputs at several scales, and the ground truth labels are downsampled to match each scale. The final loss is a weighted sum across all scales.
 
 ```python
-from typing import override
-from mipcandy import SlidingTrainer
+class DeepSupervisionWrapper(nn.Module):
+    def __init__(self, loss: nn.Module, *, weight_factors: Sequence[float] | None = None) -> None:
+        ...
 
-
-class MySlidingTrainer(SlidingTrainer):
-    @override
-    def get_window_shape(self) -> tuple[int, int] | tuple[int, int, int]:
-        return (128, 128)  # 2D windows of 128x128
-        # or
-        # return (64, 128, 128)  # 3D windows
+    def forward(self, outputs: Sequence[torch.Tensor],
+                targets: Sequence[torch.Tensor]) -> tuple[torch.Tensor, dict[str, float]]:
+        ...
 ```
 
-### Sliding Window Methods
+- **`loss`** - The base loss function to apply at each scale
+- **`weight_factors`** - Per-scale weights. If `None`, all scales are weighted equally (`1.0`)
 
-Instead of `backward()` and `validate_case()`, implement the windowed versions:
+### Automatic Weight Computation
 
-#### `backward_windowed(images, labels, toolbox, metadata) -> tuple[float, dict[str, float]]`
-
-Processes a batch of windows during training.
+When `deep_supervision=True` and `deep_supervision_scales` is set but `deep_supervision_weights` is not, the weights are computed automatically:
 
 ```python
-@override
-def backward_windowed(self, images: torch.Tensor, labels: torch.Tensor,
-                      toolbox: TrainerToolbox, metadata: SWMetadata) -> tuple[float, dict[str, float]]:
-    # images: (B*N, C, H, W) where N is number of windows
-    predictions = toolbox.model(images)
-    loss, metrics = toolbox.criterion(predictions, labels)
-    loss.backward()
-    return loss.item(), metrics
+weights = [1 / (2 ** i) for i in range(len(deep_supervision_scales))]
+# Normalized: e.g., for 3 scales -> [0.571, 0.286, 0.143]
 ```
 
-#### `validate_case_windowed(images, labels, toolbox, metadata) -> tuple[float, dict[str, float], torch.Tensor]`
+This gives the highest weight to the full-resolution output and exponentially decreasing weights to lower resolutions.
 
-Validates all windows from a single volume.
-
-```python
-@override
-def validate_case_windowed(self, images: torch.Tensor, labels: torch.Tensor,
-                           toolbox: TrainerToolbox, metadata: SWMetadata) -> tuple[float, dict[str, float], torch.Tensor]:
-    with torch.no_grad():
-        predictions = (toolbox.ema if toolbox.ema else toolbox.model)(images)
-        loss, metrics = toolbox.criterion(predictions, labels)
-    # Return predictions for all windows; base class handles reconstruction
-    return -loss.item(), metrics, predictions
-```
-
-### SWMetadata
-
-[`SWMetadata`](#mipcandy.sliding_window.SWMetadata) contains information about the sliding window operation:
-
-```python
-@dataclass
-class SWMetadata:
-    kernel: tuple[int, int] | tuple[int, int, int]  # Window size
-    stride: tuple[int, int] | tuple[int, int, int]  # Step size
-    ndim: Literal[2, 3]  # Number of dimensions
-    batch_size: int  # Original batch size
-    out_size: tuple[int, int] | tuple[int, int, int]  # Output volume size
-    n: int  # Number of windows
-```
-
-### Gaussian Weighting
-
-The trainer uses Gaussian weighting to smoothly blend overlapping windows:
-
-```python
-# 1D Gaussian for each dimension
-g = exp(-0.5 * (x / sigma)^2)
-
-# 2D weight: outer product of 1D Gaussians
-w2d = g_h[:, None] * g_w[None, :]
-
-# Final reconstruction: weighted sum / weight sum
-output = numerator / denominator
-```
-
-This prevents artifacts at window boundaries.
-
-## Sliding Segmentation Trainer
-
-[`SlidingSegmentationTrainer`](#mipcandy.presets.segmentation.SlidingSegmentationTrainer) combines the sliding window mechanism with segmentation-specific features.
-
-### Configuration
+### Enabling Deep Supervision
 
 ```python
 from typing import override
 from torch import nn
-from mipcandy import SlidingSegmentationTrainer
+from mipcandy.presets.segmentation import SegmentationTrainer
 
 
-class MySlidingSegTrainer(SlidingSegmentationTrainer):
+class MyDeepSupTrainer(SegmentationTrainer):
     num_classes: int = 1
-    sliding_window_shape: tuple[int, int] = (256, 256)  # Override default (128, 128)
+    deep_supervision: bool = True
+    deep_supervision_scales: tuple[float, ...] = (1.0, 0.5, 0.25)
 
     @override
     def build_network(self, example_shape: tuple[int, ...]) -> nn.Module:
-        return MyNetwork(example_shape[0], self.num_classes)
+        return MyMultiScaleNetwork(example_shape[0], self.num_classes)
 ```
 
-### Usage Example
+During training, the `backward()` method handles deep supervision automatically:
+1. The model output is split into per-scale outputs (unbinding along dimension 1 if needed)
+2. Labels are downsampled to match each output scale via `prepare_deep_supervision_targets()`
+3. The `DeepSupervisionWrapper` computes the weighted sum of losses
+
+During validation, only the highest-resolution output (index 0) is used.
+
+### Metrics Under Deep Supervision
+
+The wrapper produces per-scale metrics with `_ds{i}` suffixes (e.g., `soft_dice_ds0`, `bce_loss_ds1`). The main (scale 0) metric is also recorded without a suffix for consistency.
+
+## Training Recovery
+
+Training recovery allows you to resume interrupted training sessions. This is controlled by the `recoverable` parameter in the `Trainer` constructor.
+
+### How Recovery Works
+
+When `recoverable=True` (the default), the trainer saves recovery state after every epoch:
+
+- **`state_dicts.pth`** - Optimizer, scheduler, and criterion state dictionaries
+- **`state_orb.json`** - Tracker state (epoch, best_score, worst_case) and training arguments
+
+### Recovering a Training Session
 
 ```python
-from mipcandy import SlidingSegmentationTrainer, NNUNetDataset
-from torch.utils.data import DataLoader
-
-
-class MyTrainer(SlidingSegmentationTrainer):
-    sliding_window_shape: tuple[int, int] = (192, 192)  # Custom window size
-
-    @override
-    def build_network(self, example_shape: tuple[int, ...]) -> nn.Module:
-        return MyLargeNetwork(example_shape[0], num_classes=1)
-
-
-dataset, val_dataset = NNUNetDataset("path/to/dataset").fold()
-train_loader = DataLoader(dataset, batch_size=2, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
-
 trainer = MyTrainer("experiments", train_loader, val_loader, device="cuda")
-trainer.train(200, note="Large volume segmentation with sliding windows")
+trainer.recover_from("20251101-14-a3f2")  # Provide the experiment ID
+trainer.continue_training(num_epochs=50)   # Continue for 50 more epochs
 ```
+
+The `recover_from()` method:
+1. Sets the experiment ID to the specified value
+2. Verifies the experiment folder exists
+3. Loads saved metrics and tracker state
+4. Marks the trainer as recovered
+
+The `continue_training()` method:
+1. Verifies the trainer is in recovery mode
+2. Loads the saved training arguments
+3. Calls `train()` with the loaded arguments plus the new `num_epochs`
+
+### Recovery State Methods
+
+```python
+trainer.recover_from(experiment_id)           # Enter recovery mode
+trainer.continue_training(num_epochs)         # Resume training
+
+# Lower-level methods
+trainer.save_everything_for_recovery(toolbox, tracker, **training_arguments)
+trainer.load_state_orb()                      # Load full recovery state
+trainer.load_tracker()                        # Load TrainerTracker
+trainer.load_training_arguments()             # Load saved train() kwargs
+trainer.load_metrics()                        # Load metrics from CSV
+trainer.load_toolbox(num_epochs, ...)         # Rebuild toolbox with saved state
+```
+
+:::{note}
+When `recoverable=False`, calling `save_everything_for_recovery()` is a no-op. The `recovery()` method returns `True` only after `recover_from()` has been called.
+:::
 
 ## Predefined Trainers
 
@@ -545,12 +641,12 @@ trainer.train(100)
 
 **Special Features**:
 - Custom padding to multiples of 16
-- SGD optimizer with momentum (instead of AdamW)
+- SGD optimizer with momentum (instead of the default)
 - Adaptive normalization (BatchNorm for batch_size > 1, GroupNorm otherwise)
 
 ```python
 from mipcandy_bundles.cmunext import CMUNeXtTrainer
-from mipcandy import NNUNetDataset
+from mipcandy.data import NNUNetDataset
 from torch.utils.data import DataLoader
 
 dataset, val_dataset = NNUNetDataset("path/to/MSD/Task03_Liver").fold()
@@ -572,6 +668,7 @@ trainer.train(
     num_epochs=100,
     note="Experiment description",
     num_checkpoints=10,
+    compile_model=True,
     ema=True,
     seed=42,
     early_stop_tolerance=10,
@@ -585,39 +682,59 @@ trainer.train(
 ### Parameter Details
 
 - **`num_epochs: int`** - Total number of training epochs
-- **`note: str`** - Description logged in experiment folder (default: "")
-- **`num_checkpoints: int`** - Number of evenly-spaced checkpoints to save (default: 5)
-- **`ema: bool`** - Enable Exponential Moving Average of model weights (default: True)
-- **`seed: int | None`** - Random seed for reproducibility; random if None (default: None)
-- **`early_stop_tolerance: int`** - Stop if validation score doesn't improve for N epochs (default: 5)
-- **`val_score_prediction: bool`** - Enable validation score prediction using quotient regression (default: True)
-- **`val_score_prediction_degree: int`** - Polynomial degree for score prediction (default: 5)
-- **`save_preview: bool`** - Generate visualization previews (default: True)
-- **`preview_quality: float`** - Quality for 3D previews, controls max voxels in millions (default: 0.75)
+- **`note: str`** - Description logged in experiment folder (default: `""`)
+- **`num_checkpoints: int`** - Number of evenly-spaced checkpoints to save (default: `5`)
+- **`compile_model: bool`** - Enable `torch.compile()` for optimized model execution (default: `True`)
+- **`ema: bool`** - Enable Exponential Moving Average of model weights (default: `True`)
+- **`seed: int | None`** - Random seed for reproducibility; random if `None` (default: `None`)
+- **`early_stop_tolerance: int`** - Stop if validation score doesn't improve for N epochs (default: `5`)
+- **`val_score_prediction: bool`** - Enable validation score prediction using quotient regression (default: `True`)
+- **`val_score_prediction_degree: int`** - Polynomial degree for score prediction (default: `5`)
+- **`save_preview: bool`** - Generate visualization previews (default: `True`)
+- **`preview_quality: float`** - Quality for 3D previews, controls max voxels in millions (default: `0.75`)
 
 ### Loading Settings from Configuration
 
 You can load default training parameters from a YAML configuration file:
 
-```python
+```yaml
 # settings.yml
 note: "Default experiment note"
 num_checkpoints: 20
 ema: true
 seed: 42
+```
 
+```python
 # In code
 trainer.train_with_settings(100, note="Override default note")
 ```
 
 The `train_with_settings()` method merges settings from `settings.yml` with provided kwargs.
 
+### Model Compilation
+
+When `compile_model=True`, MIPCandy uses `torch.compile()` to optimize the model for faster execution. This requires a GPU with sufficient compute capability:
+
+| CUDA Version | Minimum Compute Capability |
+|--------------|---------------------------|
+| cu118, cu121, cu124 | 7.0 |
+| cu128+ | 7.5 |
+
+:::{warning}
+GPUs like P100 (CC 6.0) or GTX 1080 Ti (CC 6.1) do not meet these requirements. If you encounter an error like `CUDA capability >= 7.0`, disable model compilation:
+
+```python
+trainer.train(100, compile_model=False)
+```
+:::
+
 ## Frontend Integration
 
 Trainers support integration with experiment tracking platforms. See [Frontends](frontends.md) for detailed setup.
 
 ```python
-from mipcandy import NotionFrontend
+from mipcandy.frontend import NotionFrontend
 
 trainer = MyTrainer("experiments", train_loader, val_loader, device="cuda")
 trainer.set_frontend(NotionFrontend)
@@ -651,7 +768,7 @@ model_to_use = toolbox.ema if toolbox.ema else toolbox.model
 The trainer uses quotient regression to predict the maximum achievable validation score:
 
 ```python
-# Fits: score(epoch) ≈ P(epoch) / Q(epoch)
+# Fits: score(epoch) = P(epoch) / Q(epoch)
 # where P and Q are polynomials of specified degree
 max_epoch, max_score = self.predict_maximum_validation_score(num_epochs, degree=5)
 ```
@@ -717,7 +834,8 @@ Some architectures require input dimensions to be multiples of certain values. O
 ```python
 from typing import override
 from torch import nn
-from mipcandy import Trainer, Pad2d
+from mipcandy.training import Trainer
+from mipcandy.common.module import Pad2d
 
 class MyTrainer(Trainer):
     @override
@@ -804,15 +922,17 @@ This is useful for:
 The trainer displays detailed metrics tables after each epoch:
 
 ```
-┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
-┃ Metric       ┃ Mean Value ┃ Span             ┃ Diff     ┃
-┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
-│ combined loss│ 0.2431     │ [0.1821, 0.3156] │ -0.0123  │
-│ soft dice    │ 0.8456     │ [0.7892, 0.8901] │ +0.0089  │
-│ bce loss     │ 0.1234     │ [0.0923, 0.1567] │ -0.0045  │
-└──────────────┴────────────┴──────────────────┴──────────┘
++--------------+------------+------------------+----------+
+| Metric       | Mean Value | Span             | Diff     |
++--------------+------------+------------------+----------+
+| combined loss| 0.2431     | [0.1821, 0.3156] | -0.0123  |
+| soft dice    | 0.8456     | [0.7892, 0.8901] | +0.0089  |
+| bce loss     | 0.1234     | [0.0923, 0.1567] | -0.0045  |
++--------------+------------+------------------+----------+
 ```
 
 - **Mean Value**: Current epoch's average
-- **Span**: [min, max] range across all epochs
+- **Span**: [min, max] range across the epoch
 - **Diff**: Change from previous epoch
+
+Per-case metrics are also displayed during validation, showing individual scores for each validation case.

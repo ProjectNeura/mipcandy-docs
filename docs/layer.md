@@ -35,9 +35,9 @@ layer = conv.assemble(in_channels=32, padding=1)
 # Result: nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
 ```
 
-#### `update(*, must_exist: bool = True, **kwargs) -> Self`
+#### `update(*, must_exist: bool = True, inplace: bool = False, **kwargs) -> Self`
 
-Updates the stored keyword arguments. By default, only updates existing keys unless `must_exist=False`. Returns `self` for method chaining.
+Updates the stored keyword arguments. By default, only updates existing keys unless `must_exist=False`. When `inplace=False` (default), returns a new copy with the updated arguments; when `inplace=True`, modifies in place and returns `self`.
 
 ```python
 # Define norm with string placeholders
@@ -49,12 +49,12 @@ in_ch = 64
 layer = norm.update(num_groups=in_ch).assemble(in_ch=in_ch)
 # Result: nn.GroupNorm(num_groups=64, num_channels=64)
 
-# Update existing parameter
+# Update existing parameter (returns new copy by default)
 conv = LayerT(nn.Conv2d, kernel_size=3, padding=1)
-conv.update(kernel_size=5)  # Changes kernel_size to 5
+conv = conv.update(kernel_size=5)  # Returns new LayerT with kernel_size=5
 
 # Add new parameter (requires must_exist=False)
-conv.update(must_exist=False, bias=False)  # Adds bias parameter
+conv = conv.update(must_exist=False, bias=False)  # Returns new LayerT with bias added
 ```
 
 #### `__init__(m: type[nn.Module], **kwargs)`
@@ -204,9 +204,9 @@ from mipcandy.layer import batch_int_multiply
 scaled = list(batch_int_multiply(0.5, 128, 256, 512))
 # Result: [64, 128, 256]
 
-# Raises ValueError if result is not an integer
+# Raises ValueError if result is not an exact integer
 try:
-    list(batch_int_multiply(0.3, 100))  # 100 * 0.3 = 30.0
+    list(batch_int_multiply(0.3, 10))  # 10 * 0.3 = 3.0000000000000004 (floating-point)
 except ValueError:
     print("Inequivalent conversion")
 ```
@@ -255,5 +255,5 @@ downscaled = list(batch_int_divide(2, 128, 256, 512))
 4. **Use update() for dynamic configuration**: Modify configurations dynamically based on runtime conditions:
    ```python
    if use_bias:
-       conv.update(must_exist=False, bias=True)
+       conv = conv.update(must_exist=False, bias=True)
    ```

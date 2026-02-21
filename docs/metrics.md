@@ -1,380 +1,255 @@
 # Metrics
 
-MIPCandy provides a comprehensive suite of evaluation metrics specifically designed for medical image segmentation tasks. All metrics support both binary and multiclass scenarios.
+MIPCandy provides Dice-family evaluation metrics for medical image segmentation. The module supports binary masks, one-hot encoded tensors, and differentiable soft Dice on logits, with configurable reduction across batch dimensions.
 
 ## Overview
 
-The metrics module offers:
+The metrics module contains three Dice score functions, each operating on a different tensor format:
 
-- **Binary Metrics**: Direct comparison between binary masks
-- **Multiclass Metrics**: Automatic per-class evaluation with configurable reduction
-- **Empty Region Handling**: Configurable behavior for empty predictions/labels via `if_empty` parameter
-- **GPU Acceleration**: Optional CuPy backend for faster computation
-- **Type Safety**: Automatic dtype and device validation
+| Function | Input Format | dtype | Use Case |
+|---|---|---|---|
+| [`binary_dice`](#mipcandy.metrics.binary_dice) | Boolean masks `(B, 1, ...)` | `torch.bool` | Evaluation of binary segmentation |
+| [`dice_similarity_coefficient`](#mipcandy.metrics.dice_similarity_coefficient) | One-hot float `(B, N, ...)` | `torch.float` | Evaluation of multiclass segmentation |
+| [`soft_dice`](#mipcandy.metrics.soft_dice) | Logits/probabilities `(B, C, ...)` | `torch.float` | Differentiable loss during training |
 
-## Core Metrics
+All functions share a common validation layer ([`_args_check`](#mipcandy.metrics._args_check)) and support flexible output aggregation via [`do_reduction`](#mipcandy.metrics.do_reduction).
 
-### Dice Similarity Coefficient
+## Dice Metrics
 
-The Dice coefficient (also known as F1-score in segmentation contexts) measures the overlap between prediction and ground truth.
+### Binary Dice
 
-#### Binary Dice
+[`binary_dice`](#mipcandy.metrics.binary_dice) computes the Dice score on boolean tensors with shape `(B, 1, ...)`.
 
-[`dice_similarity_coefficient_binary`](#mipcandy.metrics.dice_similarity_coefficient_binary) computes Dice for binary masks:
+```python
+binary_dice(
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    if_empty: float = 1,
+    reduction: Reduction = "mean",
+) -> torch.Tensor
+```
+
+The spatial dimensions (all axes from index 2 onward) are summed to compute per-sample volume overlap. The `reduction` parameter then aggregates across the batch.
+
+**Formula:**
+
+$$\text{Dice} = \frac{2|A \cap B|}{|A| + |B|}$$
+
+**Example:**
 
 ```python
 import torch
-from mipcandy.metrics import dice_similarity_coefficient_binary
+from mipcandy.metrics import binary_dice
 
-# Binary masks (bool tensors)
-output = torch.tensor([[True, True, False],
-                       [True, False, False]], dtype=torch.bool)
-label = torch.tensor([[True, False, False],
-                      [True, True, False]], dtype=torch.bool)
+# Batch of 2 binary masks, single channel, 4x4 spatial
+outputs = torch.zeros(2, 1, 4, 4, dtype=torch.bool)
+labels = torch.zeros(2, 1, 4, 4, dtype=torch.bool)
 
-dice = dice_similarity_coefficient_binary(output, label)
-# Result: 2 * 2 / (3 + 3) = 0.6667
+outputs[0, 0, :2, :2] = True  # 4 positive voxels in sample 0
+labels[0, 0, :3, :2] = True   # 6 positive voxels in sample 0
+
+score = binary_dice(outputs, labels)
+# Intersection = 4, sum = 4 + 6 = 10
+# Dice for sample 0 = 2 * 4 / 10 = 0.8
+# Sample 1 is empty on both sides -> if_empty = 1.0
+# Mean = (0.8 + 1.0) / 2 = 0.9
 ```
-
-**Parameters:**
-- `output`: Binary prediction tensor (dtype: `torch.bool`)
-- `label`: Binary ground truth tensor (dtype: `torch.bool`)
-- `if_empty`: Return value when both masks are empty (default: `1.0`)
-
-**Formula:**
-$\text{Dice} = \frac{2|A \cap B|}{|A| + |B|}$
-
-#### Multiclass Dice
-
-[`dice_similarity_coefficient_multiclass`](#mipcandy.metrics.dice_similarity_coefficient_multiclass) computes per-class Dice and aggregates:
-
-```python
-from mipcandy.metrics import dice_similarity_coefficient_multiclass
-
-# Integer class labels (0 = background, 1-3 = classes)
-output = torch.tensor([[0, 1, 2],
-                       [1, 2, 3]], dtype=torch.int)
-label = torch.tensor([[0, 1, 1],
-                      [1, 2, 3]], dtype=torch.int)
-
-# Compute mean Dice across classes 1-3 (excluding background class 0)
-dice = dice_similarity_coefficient_multiclass(output, label, num_classes=3)
-```
-
-**Parameters:**
-- `output`: Integer prediction tensor (dtype: `torch.int`)
-- `label`: Integer ground truth tensor (dtype: `torch.int`)
-- `num_classes`: Number of classes (excluding background). If `None`, inferred from max value
-- `if_empty`: Return value for empty class pairs (default: `1.0`)
 
 :::{note}
-Multiclass metrics exclude class 0 (background) and compute scores for classes 1 to `num_classes`.
+Both `outputs` and `labels` must be `torch.bool`. Passing float or integer tensors raises a `TypeError`.
 :::
 
-**Returns:** Mean Dice coefficient across all classes (1 to `num_classes`)
+### Dice Similarity Coefficient
 
-#### Soft Dice Coefficient
-
-[`soft_dice_coefficient`](#mipcandy.metrics.soft_dice_coefficient) computes differentiable Dice for probability maps:
+[`dice_similarity_coefficient`](#mipcandy.metrics.dice_similarity_coefficient) computes Dice on one-hot encoded float tensors with shape `(B, N, ...)`, where `N` is the number of classes.
 
 ```python
-from mipcandy.metrics import soft_dice_coefficient
-
-# Probability maps (float tensors)
-output = torch.rand(2, 1, 128, 128)  # Batch of 2, single channel
-label = torch.randint(0, 2, (2, 1, 128, 128)).float()
-
-dice = soft_dice_coefficient(output, label)
+dice_similarity_coefficient(
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    if_empty: float = 1,
+    reduction: Reduction = "mean",
+) -> torch.Tensor
 ```
 
-**Parameters:**
-- `output`: Float prediction tensor (typically after sigmoid)
-- `label`: Float ground truth tensor
-- `smooth`: Smoothing constant to avoid division by zero (default: `1e-5`)
-- `include_bg`: Whether to include background class (channel 0) in computation (default: `True`)
+The function computes true positives, false positives, and false negatives per class and per sample across spatial dimensions:
 
-**Multiclass usage:**
+$$\text{DSC} = \frac{2 \cdot TP}{2 \cdot TP + FP + FN}$$
+
+If any class has a zero denominator (i.e., no predictions and no ground truth for that class), the function returns `if_empty` immediately.
+
+**Example:**
+
 ```python
-# Multiclass prediction: (batch, num_classes, H, W)
-output = torch.rand(2, 4, 128, 128)  # 4 classes including background
-label = torch.zeros(2, 4, 128, 128)
+import torch
+from mipcandy.metrics import dice_similarity_coefficient
 
-# Include all classes (default)
-dice_all = soft_dice_coefficient(output, label, include_bg=True)
+# Batch=1, 3 classes, 8x8 spatial
+outputs = torch.zeros(1, 3, 8, 8, dtype=torch.float)
+labels = torch.zeros(1, 3, 8, 8, dtype=torch.float)
 
-# Exclude background (class 0)
-dice_fg = soft_dice_coefficient(output, label, include_bg=False)
+# Class 0: full overlap
+outputs[0, 0, :4, :4] = 1.0
+labels[0, 0, :4, :4] = 1.0
+
+# Class 1: partial overlap
+outputs[0, 1, 4:8, :4] = 1.0
+labels[0, 1, 4:8, 2:6] = 1.0
+
+score = dice_similarity_coefficient(outputs, labels)
 ```
 
 :::{tip}
-Soft Dice is primarily used as a differentiable loss function during training, not for evaluation. Set `include_bg=False` when background dominates and you want to focus on foreground classes.
+This function is intended for hard one-hot predictions during evaluation. For differentiable training objectives, use [`soft_dice`](#mipcandy.metrics.soft_dice) instead.
 :::
 
-### Accuracy
+### Soft Dice
 
-Measures the proportion of correctly classified pixels/voxels.
-
-#### Binary Accuracy
-
-[`accuracy_binary`](#mipcandy.metrics.accuracy_binary) computes pixel-wise accuracy:
+[`soft_dice`](#mipcandy.metrics.soft_dice) computes a differentiable Dice score on float tensors (logits or probabilities) with shape `(B, C, ...)`.
 
 ```python
-from mipcandy.metrics import accuracy_binary
-
-output = torch.tensor([[True, True, False]], dtype=torch.bool)
-label = torch.tensor([[True, False, False]], dtype=torch.bool)
-
-acc = accuracy_binary(output, label)
-# Result: (TP + TN) / (TP + TN + FP + FN) = 2/3 = 0.6667
+soft_dice(
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    smooth: float = 1,
+    batch_dice: bool = True,
+    reduction: Reduction = "mean",
+) -> torch.Tensor
 ```
 
 **Formula:**
-$\text{Accuracy} = \frac{TP + TN}{TP + TN + FP + FN}$
 
-#### Multiclass Accuracy
+$$\text{Soft Dice} = \frac{2 \sum (p \cdot g) + \epsilon}{\sum p + \sum g + \epsilon}$$
 
-[`accuracy_multiclass`](#mipcandy.metrics.accuracy_multiclass) computes per-class accuracy:
+where $p$ is the predicted tensor, $g$ is the ground truth tensor, and $\epsilon$ is the `smooth` parameter.
 
-```python
-from mipcandy.metrics import accuracy_multiclass
+**Parameters:**
 
-output = torch.tensor([[0, 1, 2]], dtype=torch.int)
-label = torch.tensor([[0, 1, 1]], dtype=torch.int)
+- `smooth` -- Laplace smoothing constant added to both numerator and denominator to prevent division by zero and stabilize gradients. Default: `1`.
+- `batch_dice` -- When `True`, all dimensions (batch, spatial, and class) are aggregated into a single scalar Dice score. When `False`, Dice is computed per-sample per-class, yielding a `(B, C)` tensor before reduction. Default: `True`.
+- `reduction` -- Aggregation method applied to the resulting scores. Default: `"mean"`.
 
-acc = accuracy_multiclass(output, label, num_classes=2)
-```
-
-### Precision
-
-Measures the proportion of true positives among all positive predictions.
-
-#### Binary Precision
-
-[`precision_binary`](#mipcandy.metrics.precision_binary):
+**Example:**
 
 ```python
-from mipcandy.metrics import precision_binary
+import torch
+from mipcandy.metrics import soft_dice
 
-output = torch.tensor([[True, True, False]], dtype=torch.bool)
-label = torch.tensor([[True, False, False]], dtype=torch.bool)
+# Logits: batch=4, 3 classes, 64x64 spatial
+outputs = torch.randn(4, 3, 64, 64)
+labels = torch.randint(0, 2, (4, 3, 64, 64)).float()
 
-prec = precision_binary(output, label)
-# Result: TP / (TP + FP) = 1/2 = 0.5
+# Batch-level soft Dice (default)
+score = soft_dice(outputs.sigmoid(), labels)
+
+# Per-sample soft Dice
+score = soft_dice(outputs.sigmoid(), labels, batch_dice=False)
 ```
 
-**Formula:**
-$\text{Precision} = \frac{TP}{TP + FP}$
-
-:::{note}
-The `if_empty` parameter controls return value when no positive predictions exist (denominator = 0).
+:::{warning}
+`soft_dice` does not apply sigmoid or softmax internally. You must apply the appropriate activation to `outputs` before calling this function if your model produces raw logits.
 :::
 
-#### Multiclass Precision
+## Utilities
 
-[`precision_multiclass`](#mipcandy.metrics.precision_multiclass):
+### Argument Validation
+
+[`_args_check`](#mipcandy.metrics._args_check) validates that `outputs` and `labels` are compatible in shape, dtype, and device.
 
 ```python
-from mipcandy.metrics import precision_multiclass
-
-output = torch.tensor([[0, 1, 2]], dtype=torch.int)
-label = torch.tensor([[0, 1, 1]], dtype=torch.int)
-
-prec = precision_multiclass(output, label, num_classes=2)
+_args_check(
+    outputs: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    dtype: torch.dtype | None = None,
+    device: Device | None = None,
+) -> tuple[torch.dtype, Device]
 ```
 
-### Recall (Sensitivity)
+**Checks performed:**
 
-Measures the proportion of true positives among all actual positives.
+1. **Shape**: `outputs.shape == labels.shape`, otherwise raises `ValueError`.
+2. **Dtype**: Both tensors must share the same dtype. If `dtype` is specified, both must match it exactly. Raises `TypeError` on mismatch.
+3. **Device**: Both tensors must reside on the same device. If `device` is specified, both must be on that device. Raises `RuntimeError` on mismatch.
 
-#### Binary Recall
-
-[`recall_binary`](#mipcandy.metrics.recall_binary):
-
-```python
-from mipcandy.metrics import recall_binary
-
-output = torch.tensor([[True, True, False]], dtype=torch.bool)
-label = torch.tensor([[True, False, True]], dtype=torch.bool)
-
-rec = recall_binary(output, label)
-# Result: TP / (TP + FN) = 1/2 = 0.5
-```
-
-**Formula:**
-$\text{Recall} = \frac{TP}{TP + FN}$
-
-:::{note}
-The `if_empty` parameter controls return value when no positive labels exist (denominator = 0).
-:::
-
-#### Multiclass Recall
-
-[`recall_multiclass`](#mipcandy.metrics.recall_multiclass):
+Returns the validated `(dtype, device)` tuple.
 
 ```python
-from mipcandy.metrics import recall_multiclass
+import torch
+from mipcandy.metrics import _args_check
 
-output = torch.tensor([[0, 1, 2]], dtype=torch.int)
-label = torch.tensor([[0, 1, 1]], dtype=torch.int)
+a = torch.zeros(2, 1, 8, 8, dtype=torch.bool, device="cpu")
+b = torch.zeros(2, 1, 8, 8, dtype=torch.bool, device="cpu")
 
-rec = recall_multiclass(output, label, num_classes=2)
-```
-
-### Intersection over Union (IoU)
-
-Also known as Jaccard Index, measures the overlap between prediction and ground truth regions.
-
-#### Binary IoU
-
-[`iou_binary`](#mipcandy.metrics.iou_binary):
-
-```python
-from mipcandy.metrics import iou_binary
-
-output = torch.tensor([[True, True, False]], dtype=torch.bool)
-label = torch.tensor([[True, False, False]], dtype=torch.bool)
-
-iou = iou_binary(output, label)
-# Result: |A ∩ B| / |A ∪ B| = 1/2 = 0.5
-```
-
-**Formula:**
-$\text{IoU} = \frac{|A \cap B|}{|A \cup B|}$
-
-**Relationship to Dice:**
-\begin{align}
-\text{Dice} &= \frac{2 \cdot \text{IoU}}{1 + \text{IoU}} \\
-\text{IoU} &= \frac{\text{Dice}}{2 - \text{Dice}}
-\end{align}
-
-#### Multiclass IoU
-
-[`iou_multiclass`](#mipcandy.metrics.iou_multiclass):
-
-```python
-from mipcandy.metrics import iou_multiclass
-
-output = torch.tensor([[0, 1, 2]], dtype=torch.int)
-label = torch.tensor([[0, 1, 1]], dtype=torch.int)
-
-iou = iou_multiclass(output, label, num_classes=2)
-```
-
-## Advanced Usage
-
-### Handling Empty Regions
-
-The `if_empty` parameter controls behavior when masks are empty:
-
-```python
-# Both masks empty - perfect match
-output = torch.zeros((10, 10), dtype=torch.bool)
-label = torch.zeros((10, 10), dtype=torch.bool)
-dice = dice_similarity_coefficient_binary(output, label, if_empty=1.0)
-# Returns: 1.0
-
-# Prediction empty but label non-empty - complete miss
-output = torch.zeros((10, 10), dtype=torch.bool)
-label = torch.ones((10, 10), dtype=torch.bool)
-dice = dice_similarity_coefficient_binary(output, label, if_empty=1.0)
-# Returns: 0.0 (computed normally since label is not empty)
+dtype, device = _args_check(a, b, dtype=torch.bool)
+# dtype = torch.bool, device = cpu
 ```
 
 :::{note}
-**Default values:**
-- Most metrics: `if_empty=1.0` (perfect score for empty pairs)
-- Rationale: Empty prediction matching empty ground truth is considered a correct prediction
+All three Dice functions call `_args_check` internally with an explicit `dtype` constraint (`torch.bool` for `binary_dice`, `torch.float` for the other two). You generally do not need to call `_args_check` yourself unless you are implementing a custom metric.
 :::
 
-### Multiclass Metric Computation
+### Reduction
 
-All multiclass metrics use the same underlying pattern via [`apply_multiclass_to_binary`](#mipcandy.metrics.apply_multiclass_to_binary):
+[`do_reduction`](#mipcandy.metrics.do_reduction) applies an aggregation method to a tensor of per-sample or per-class scores.
 
 ```python
-# Pseudocode for multiclass metrics
-for class_id in range(1, num_classes + 1):
-    binary_output = (output == class_id)
-    binary_label = (label == class_id)
-    score[class_id] = binary_metric(binary_output, binary_label, if_empty=if_empty)
-
-return mean(score)  # or sum, depending on reduction parameter
+do_reduction(x: torch.Tensor, method: Reduction) -> torch.Tensor
 ```
 
-### GPU Acceleration
-
-MIPCandy automatically uses CuPy for distance transform operations when available:
+The `Reduction` type is defined as:
 
 ```python
-# Automatically uses CuPy if installed and data is on GPU
-try:
-    from cupy import from_dlpack
-    from cupyx.scipy.ndimage import distance_transform_edt
-    # Use GPU-accelerated implementation
-except ImportError:
-    from numpy import from_dlpack
-    from scipy.ndimage import distance_transform_edt
-    # Fallback to CPU implementation
+type Reduction = Literal["mean", "median", "sum", "none"]
 ```
 
-### Type and Device Safety
+**Supported methods:**
 
-:::{important}
-All metrics include automatic validation to prevent common errors:
-
-**Validation checks:**
-1. Shape compatibility: `output.shape == label.shape`
-2. Dtype compatibility: Both tensors must have the same dtype
-3. Device compatibility: Both tensors must be on the same device
-4. Expected dtype: Binary metrics require `torch.bool`, multiclass require `torch.int`
+| Method | Behavior |
+|---|---|
+| `"mean"` | Arithmetic mean of all elements |
+| `"median"` | Median value |
+| `"sum"` | Sum of all elements |
+| `"none"` | No reduction; returns the tensor unchanged |
 
 ```python
-from mipcandy.metrics import dice_similarity_coefficient_binary
-
-output = torch.tensor([[True]], dtype=torch.bool, device="cuda")
-label = torch.tensor([[True]], dtype=torch.bool, device="cpu")
-
-# Raises RuntimeError: tensors must be on the same device
-dice = dice_similarity_coefficient_binary(output, label)
-```
-:::
-
-## Reduction Methods
-
-The [`do_reduction`](#mipcandy.metrics.do_reduction) utility function provides flexible aggregation:
-
-```python
+import torch
 from mipcandy.metrics import do_reduction
 
 scores = torch.tensor([0.8, 0.9, 0.7, 0.85])
 
-mean_score = do_reduction(scores, method="mean")    # 0.8125
-median_score = do_reduction(scores, method="median")  # 0.825
-sum_score = do_reduction(scores, method="sum")      # 3.25
-all_scores = do_reduction(scores, method="none")    # [0.8, 0.9, 0.7, 0.85]
+do_reduction(scores, "mean")    # tensor(0.8125)
+do_reduction(scores, "median")  # tensor(0.825)
+do_reduction(scores, "sum")     # tensor(3.25)
+do_reduction(scores, "none")    # tensor([0.8, 0.9, 0.7, 0.85])
 ```
 
-**Supported methods:**
-- `"mean"`: Arithmetic mean (default for most metrics)
-- `"median"`: Median value
-- `"sum"`: Sum of all values
-- `"none"`: No reduction, return all values
+## Handling Empty Regions
 
-## Metric Protocol
+The `if_empty` parameter in [`binary_dice`](#mipcandy.metrics.binary_dice) and [`dice_similarity_coefficient`](#mipcandy.metrics.dice_similarity_coefficient) controls the return value when both `outputs` and `labels` contain no positive elements.
 
-The [`Metric`](#mipcandy.metrics.Metric) protocol defines the interface for all metric functions:
+- **Default: `1`** -- An empty prediction matching an empty ground truth is considered a perfect score.
+- Set to `0` if you want empty-vs-empty cases to be penalized.
 
 ```python
-from typing import Protocol
 import torch
+from mipcandy.metrics import binary_dice
 
-class Metric(Protocol):
-    def __call__(
-        self,
-        output: torch.Tensor,
-        label: torch.Tensor,
-        *,
-        if_empty: float = ...
-    ) -> torch.Tensor: ...
+# Both masks empty
+outputs = torch.zeros(1, 1, 8, 8, dtype=torch.bool)
+labels = torch.zeros(1, 1, 8, 8, dtype=torch.bool)
+
+binary_dice(outputs, labels, if_empty=1.0)  # tensor(1.)
+binary_dice(outputs, labels, if_empty=0.0)  # tensor(0.)
+
+# Only prediction is empty, label is not
+labels[0, 0, :4, :4] = True
+binary_dice(outputs, labels)  # tensor(0.) -- computed normally
 ```
 
-This protocol enables type-safe metric composition and custom metric implementation.
+:::{important}
+In `binary_dice`, the empty check compares the total `volume_sum` (across all samples) against zero. This works correctly for single-sample inputs (`B=1`); for multi-sample batches, the check triggers only when **all** samples are simultaneously empty. In `dice_similarity_coefficient`, the check applies globally across all classes: if **any** class has a zero denominator, the entire result is replaced by `if_empty`.
+:::
