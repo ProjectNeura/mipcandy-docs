@@ -9,20 +9,24 @@ The dataset module offers a flexible hierarchy of dataset classes tailored for m
 ### Dataset Hierarchy
 
 ```
-_AbstractDataset (base)
-├── UnsupervisedDataset
-│   ├── DatasetFromMemory
-│   ├── PathBasedUnsupervisedDataset
-│   │   └── SimpleDataset
-│   └── (user custom datasets)
-│
-└── SupervisedDataset
-    ├── MergedDataset
-    ├── PathBasedSupervisedDataset
-    │   └── NNUNetDataset
-    ├── BinarizedDataset
-    ├── ROIDataset
-    └── (user custom datasets)
+Loader
+├── TensorLoader
+└── _AbstractDataset (base)
+    ├── ComposeDataset
+    ├── UnsupervisedDataset
+    │   ├── DatasetFromMemory
+    │   ├── PathBasedUnsupervisedDataset
+    │   │   └── SimpleDataset
+    │   └── (user custom datasets)
+    │
+    └── SupervisedDataset
+        ├── MergedDataset
+        ├── PathBasedSupervisedDataset
+        │   └── NNUNetDataset
+        ├── BinarizedDataset
+        ├── ROIDataset
+        │   └── RandomROIDataset
+        └── (user custom datasets)
 ```
 
 ### Key Features
@@ -128,7 +132,7 @@ for fold_id in range(5):
 from mipcandy import SimpleDataset
 
 # Load all images from a directory
-dataset = SimpleDataset("path/to/images", device="cuda")
+dataset = SimpleDataset("path/to/images", is_label=False, device="cuda")
 
 # Iterate over images
 for image in dataset:
@@ -152,6 +156,47 @@ print(f"Unique labels: {binary_label.unique()}")  # [0, 1]
 ```
 
 ## Dataset Types
+
+### Loader and TensorLoader
+
+All datasets inherit from `Loader`, which controls how files are loaded from disk. The default `Loader` uses `load_image()` (SimpleITK-based) to read medical image formats.
+
+#### Loader
+
+The base loader class used by all datasets:
+
+```python
+class Loader:
+    @staticmethod
+    def do_load(path, *, is_label=False, device="cpu", **kwargs) -> torch.Tensor:
+        return load_image(path, is_label=is_label, device=device, **kwargs)
+```
+
+#### TensorLoader
+
+A loader for safetensors format (`.pt` files), using `fast_load()` instead of `load_image()`. This is useful when images have been pre-processed and saved as tensors via `fast_save()`.
+
+```python
+class TensorLoader(Loader):
+    @staticmethod
+    def do_load(path, *, is_label=False, device="cpu", **kwargs) -> torch.Tensor:
+        return fast_load(path, device=device)
+```
+
+To use `TensorLoader` with a dataset, create a subclass that inherits from both:
+
+```python
+from mipcandy.data.dataset import TensorLoader, NNUNetDataset
+
+class TensorNNUNetDataset(TensorLoader, NNUNetDataset):
+    """NNUNetDataset that loads safetensors files instead of medical images."""
+    pass
+
+# Now .pt files in the nnU-Net directory structure are loaded via fast_load()
+dataset = TensorNNUNetDataset("dataset/", device="cuda")
+```
+
+Because `_AbstractDataset` inherits from `Loader`, and Python's MRO places `TensorLoader` before `NNUNetDataset`, the `do_load()` from `TensorLoader` takes precedence. This pattern works with any dataset class.
 
 ### Base Classes
 
@@ -195,9 +240,10 @@ SupervisedDataset[D]  # D is the type of image/label storage
 **Returns:** `tuple[torch.Tensor, torch.Tensor]` (image, label)
 
 **Key methods:**
-- `load(idx: int) -> tuple[torch.Tensor, torch.Tensor]`: Load image and label at index
+- `load_image(idx: int) -> torch.Tensor`: Load image at index (abstract)
+- `load_label(idx: int) -> torch.Tensor`: Load label at index (abstract)
 - `__len__() -> int`: Return number of samples
-- `construct_new(images: D, labels: D) -> Self`: Create new instance with subset (required for folding)
+- `construct_new(images: list[Any], labels: list[Any]) -> Self`: Create new instance with subset (required for folding)
 - `fold(fold, picker) -> tuple[Self, Self]`: Built-in K-fold splitting
 
 **Usage:**
@@ -208,13 +254,14 @@ class MyDataset(SupervisedDataset[list[str]]):
     def __init__(self, image_paths: list[str], label_paths: list[str], device: str = "cpu"):
         super().__init__(image_paths, label_paths, device=device)
 
-    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        image = load_image(self._images[idx], device=self._device)
-        label = load_image(self._labels[idx], is_label=True, device=self._device)
-        return image, label
+    def load_image(self, idx: int) -> torch.Tensor:
+        return load_image(self._images[idx], device=self._device)
+
+    def load_label(self, idx: int) -> torch.Tensor:
+        return load_image(self._labels[idx], is_label=True, device=self._device)
 
     def construct_new(self, images: list[str], labels: list[str]) -> Self:
-        return MyDataset(images, labels, device=self._device)
+        return self.__class__(images, labels, device=self._device)
 ```
 
 ### Concrete Implementations
@@ -257,8 +304,7 @@ dataset/
 - `split`: `"Tr"` (training) or `"Ts"` (test), default: `"Tr"`
 - `prefix`: Filter cases by prefix, default: `""`
 - `align_spacing`: Resample to isotropic spacing, default: `False`
-- `image_transform`: Optional image transform function
-- `label_transform`: Optional label transform function
+- `transform`: Optional [`JointTransform`](#mipcandy.data.transform.JointTransform) for joint image-label transformation
 - `device`: Device placement, default: `"cpu"`
 
 **Examples:**
@@ -282,6 +328,7 @@ image, label = dataset[0]  # (N_modalities, H, W) or (N_modalities, D, H, W)
 With preprocessing:
 ```python
 from mipcandy import NNUNetDataset, Normalize
+from mipcandy.data.transform import JointTransform
 
 # Resample to isotropic spacing
 dataset = NNUNetDataset(
@@ -294,7 +341,7 @@ dataset = NNUNetDataset(
 normalizer = Normalize(domain=(0, 1))
 dataset = NNUNetDataset(
     "dataset/",
-    image_transform=normalizer,
+    transform=JointTransform(image_only=normalizer),
     device="cuda"
 )
 ```
@@ -353,12 +400,16 @@ binary = BinarizedDataset(base, positive_ids=(2, 3))
 ```
 
 :::{note}
-[`BinarizedDataset`](#mipcandy.data.dataset.BinarizedDataset) does not support `construct_new()` and therefore cannot be used with `fold()`. Apply binarization after folding instead.
+[`BinarizedDataset`](#mipcandy.data.dataset.BinarizedDataset) overrides `fold()` to delegate to the base dataset's `fold()` and re-wraps each split. You can call `fold()` directly on a `BinarizedDataset`.
 :::
 
-Correct usage with K-fold:
+Using K-fold with binarized data:
 ```python
-# Fold first, then binarize
+# Option 1: Fold directly on BinarizedDataset
+binary = BinarizedDataset(NNUNetDataset("dataset/", device="cuda"), positive_ids=(2,))
+train_binary, val_binary = binary.fold(fold=0)
+
+# Option 2: Fold first, then binarize
 base = NNUNetDataset("dataset/", device="cuda")
 train, val = base.fold(fold=0)
 
@@ -372,6 +423,8 @@ Simple unsupervised dataset loading all files from a directory.
 
 **Parameters:**
 - `folder`: Directory containing images
+- `is_label`: Whether files are labels (affects loading behavior, e.g. integer dtype)
+- `transform`: Optional transform function, default: `None`
 - `device`: Device placement, default: `"cpu"`
 
 **Examples:**
@@ -379,7 +432,7 @@ Simple unsupervised dataset loading all files from a directory.
 from mipcandy import SimpleDataset
 
 # Load all images from directory (sorted alphabetically)
-dataset = SimpleDataset("images/", device="cuda")
+dataset = SimpleDataset("images/", is_label=False, device="cuda")
 
 # Supports various formats
 # images/
@@ -444,8 +497,8 @@ Supervised dataset created by merging separate image and label datasets.
 from mipcandy import SimpleDataset, MergedDataset
 
 # Separate directories for images and labels
-images = SimpleDataset("images/", device="cuda")
-labels = SimpleDataset("labels/", device="cuda")
+images = SimpleDataset("images/", is_label=False, device="cuda")
+labels = SimpleDataset("labels/", is_label=True, device="cuda")
 
 # Merge into supervised dataset
 dataset = MergedDataset(images, labels, device="cuda")
@@ -466,6 +519,40 @@ labels = DatasetFromMemory(label_tensors, device="cuda")
 
 dataset = MergedDataset(images, labels, device="cuda")
 ```
+
+#### ComposeDataset
+
+Concatenates multiple datasets into a single dataset. Accepts a sequence of `SupervisedDataset` or `UnsupervisedDataset` instances and presents them as one contiguous dataset.
+
+```python
+from mipcandy import NNUNetDataset, ComposeDataset
+
+# Combine datasets from different sources
+dataset_a = NNUNetDataset("dataset_a/", device="cuda")
+dataset_b = NNUNetDataset("dataset_b/", device="cuda")
+
+# Compose into a single dataset
+composed = ComposeDataset([dataset_a, dataset_b], device="cuda")
+
+print(f"Total samples: {len(composed)}")  # len(dataset_a) + len(dataset_b)
+
+# Indexing is transparent
+image, label = composed[0]  # From dataset_a
+image, label = composed[len(dataset_a)]  # From dataset_b
+```
+
+**Parameters:**
+- `bases`: Sequence of `SupervisedDataset` or `UnsupervisedDataset` instances to concatenate
+- `device`: Device placement, default: `"cpu"`
+
+**Behavior:**
+- Maps global indices to the appropriate base dataset and local index
+- Each base dataset retains its own transforms and loading logic
+- The `load()` method delegates to the correct base dataset's `load()` method
+
+:::{note}
+`ComposeDataset` inherits from `_AbstractDataset` directly (not from `SupervisedDataset` or `UnsupervisedDataset`), so it does not support `fold()` or `construct_new()`. Fold individual datasets before composing them.
+:::
 
 ## K-Fold Cross Validation
 
@@ -687,12 +774,13 @@ Apply transforms to full dataset before folding:
 
 ```python
 from mipcandy import NNUNetDataset, Normalize
+from mipcandy.data.transform import JointTransform
 
 # Create dataset with transforms
 normalizer = Normalize(domain=(0, 1))
 dataset = NNUNetDataset(
     "dataset/",
-    image_transform=normalizer,
+    transform=JointTransform(image_only=normalizer),
     align_spacing=True,
     device="cuda"
 )
@@ -800,7 +888,11 @@ print(f"Inspected {len(annotations)} cases")
 For each case:
 - Image shape
 - Foreground bounding box (minimal box containing all non-background voxels)
-- Unique class IDs present in the label
+- Unique foreground class IDs present in the label
+- Per-class voxel counts, bounding boxes, and sampled voxel locations
+
+Across the dataset:
+- Intensity statistics (mean, std, 0.5th percentile, 99.5th percentile) of foreground voxels
 
 ### InspectionAnnotation
 
@@ -817,13 +909,19 @@ annotation = annotations[0]
 
 print(f"Image shape: {annotation.shape}")
 print(f"Foreground bbox: {annotation.foreground_bbox}")
-print(f"Class IDs: {annotation.ids}")
+print(f"Class IDs: {annotation.class_ids}")
+print(f"Class counts: {annotation.class_counts}")
+print(f"Spacing: {annotation.spacing}")
 ```
 
 **Attributes:**
 - `shape`: Image spatial dimensions `(H, W)` or `(D, H, W)`
 - `foreground_bbox`: Bounding box `(y0, y1, x0, x1)` or `(z0, z1, y0, y1, x0, x1)`
-- `ids`: Tuple of unique class IDs in label
+- `class_ids`: Tuple of unique foreground class IDs in label (background excluded)
+- `class_counts`: `dict[int, int]` mapping each class ID to its voxel count
+- `class_bboxes`: `dict[int, tuple[int, ...]]` mapping each class ID to its bounding box
+- `class_locations`: `dict[int, tuple[tuple[int, ...], ...]]` mapping each class ID to sampled voxel coordinates (up to `max_samples` per class)
+- `spacing`: Voxel spacing `(H, W)` or `(D, H, W)`, or `None` if not available
 
 **Methods:**
 
@@ -1068,21 +1166,82 @@ for images, labels in loader:
 - Inherits device from annotations
 - Does not support `fold()` (fold before inspection)
 
-### Saving and Loading Annotations
+### RandomROIDataset
 
-Save inspection results to avoid re-computation:
+Random patch-based training dataset that extends [`ROIDataset`](#mipcandy.data.inspection.ROIDataset) with stochastic patch sampling and foreground oversampling. This is the recommended dataset for patch-based segmentation training.
 
 ```python
-from mipcandy import inspect, NNUNetDataset
+from mipcandy import NNUNetDataset, inspect, RandomROIDataset
+from torch.utils.data import DataLoader
+
+# Load and inspect
+dataset = NNUNetDataset("dataset/", device="cuda")
+annotations = inspect(dataset)
+
+# Create random ROI dataset
+roi_dataset = RandomROIDataset(
+    annotations,
+    batch_size=2,
+    num_patches_per_case=2,
+    oversample_rate=0.33
+)
+
+print(f"Dataset length: {len(roi_dataset)}")
+print(f"ROI shape: {roi_dataset.roi_shape()}")
+
+# Use with DataLoader
+loader = DataLoader(roi_dataset, batch_size=2, shuffle=True)
+for images, labels in loader:
+    print(f"Batch: {images.shape}")
+    break
+```
+
+**Parameters:**
+- `annotations`: [`InspectionAnnotations`](#mipcandy.data.inspection.InspectionAnnotations) object
+- `batch_size`: Batch size used for oversampling rate calculation
+- `num_patches_per_case`: Number of patches per case; multiplies dataset indices so each case can be sampled multiple times per epoch (default: `1`)
+- `oversample_rate`: Probability of forcing a patch to be centered on a foreground voxel (default: `0.33`)
+- `clamp`: Whether to clamp ROI shape to minimum image size (default: `False`)
+- `percentile`: Percentile for statistical foreground shape (default: `0.5`)
+- `min_factor`: Ensure the computed patch dimensions are divisible by this factor, e.g. `16` for typical encoder downsampling (default: `16`)
+
+**Behavior:**
+
+- Computes ROI shape from the statistical foreground shape at the given percentile, rounded up to the nearest multiple of `min_factor`
+- Each `__getitem__` call randomly places a patch within the image bounds
+- When oversampling is triggered (based on `oversample_rate` and index within the batch), a random foreground class and voxel are selected, and the patch is centered around that voxel
+- Patches that extend beyond the image boundary are padded with zeros via `crop_and_pad()`
+- The `roi_shape()` method can both get and set the current ROI shape
+
+**Oversampling logic:**
+
+The `oversample_foreground(idx)` method determines whether sample `idx` should force foreground centering:
+
+```python
+# Foreground is forced when (idx % batch_size) falls in the last portion of the batch
+force_foreground = (idx % batch_size) >= round(batch_size * (1 - oversample_rate))
+```
+
+With `batch_size=4` and `oversample_rate=0.33`, roughly 1 out of every 4 samples in a batch will be foreground-centered.
+
+:::{note}
+Unlike [`ROIDataset`](#mipcandy.data.inspection.ROIDataset) which always crops a deterministic, centered ROI, `RandomROIDataset` introduces randomness in patch placement. This provides data augmentation through spatial variation and is preferred for training.
+:::
+
+### Saving and Loading Annotations
+
+Save inspection results to avoid re-computation. Annotations are stored in JSON format:
+
+```python
+from mipcandy import inspect, NNUNetDataset, load_inspection_annotations
 
 # Inspect and save
 dataset = NNUNetDataset("dataset/", device="cuda")
 annotations = inspect(dataset)
-annotations.save("annotations.csv")
+annotations.save("annotations.json")
 
-# Load later (note: requires dataset reference)
-# from mipcandy import load_inspection_annotations
-# annotations = load_inspection_annotations("annotations.csv")
+# Load later (requires dataset reference)
+annotations = load_inspection_annotations("annotations.json", dataset)
 ```
 
 ### Complete Patch-based Training Example
@@ -1199,13 +1358,17 @@ Create custom dataset classes to handle specialized data formats or preprocessin
 
 All custom datasets must implement:
 
-**Required methods:**
+**Required methods for unsupervised datasets:**
 - `__init__()`: Initialize with data paths/references
-- `load(idx: int)`: Load and return data at index
-- `__len__()`: Return total number of samples
+- `load(idx: int) -> torch.Tensor`: Load and return image at index
+- `__len__() -> int`: Return total number of samples
 
-**For supervised datasets additionally:**
-- `construct_new(images, labels)`: Create new instance with subset (enables `fold()`)
+**Required methods for supervised datasets:**
+- `__init__()`: Initialize with data paths/references
+- `load_image(idx: int) -> torch.Tensor`: Load image at index
+- `load_label(idx: int) -> torch.Tensor`: Load label at index
+- `__len__() -> int`: Return total number of samples
+- `construct_new(images, labels) -> Self`: Create new instance with subset (enables `fold()`)
 
 ### SupervisedDataset Example
 
@@ -1239,20 +1402,18 @@ class CustomMedicalDataset(SupervisedDataset[list[str]]):
         self.normalize: bool = normalize
 
     @override
-    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        # Load image and label
+    def load_image(self, idx: int) -> torch.Tensor:
         image = load_image(self._images[idx], device=self._device)
-        label = load_image(self._labels[idx], is_label=True, device=self._device)
 
         # Custom preprocessing
         if self.normalize:
             image = (image - image.mean()) / (image.std() + 1e-8)
 
-        # Ensure correct shape
-        if image.ndim == 3 and image.shape[0] == 1:
-            image = image.squeeze(0)
+        return image
 
-        return image, label
+    @override
+    def load_label(self, idx: int) -> torch.Tensor:
+        return load_image(self._labels[idx], is_label=True, device=self._device)
 
     @override
     def construct_new(self, images: list[str], labels: list[str]) -> Self:
@@ -1362,23 +1523,23 @@ class DicomDataset(PathBasedSupervisedDataset):
             device=device
         )
 
-    @override
-    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        # Custom DICOM loading
-        image = self.load_dicom(self._images[idx])
-        label = self.load_dicom(self._labels[idx])
-        return image, label
-
-    def load_dicom(self, path: str) -> torch.Tensor:
-        # Custom DICOM loading logic
+    @staticmethod
+    def _load_dicom(path: str, device: str) -> torch.Tensor:
         import pydicom
         dcm = pydicom.dcmread(path)
         array = dcm.pixel_array
-        return torch.tensor(array, dtype=torch.float32, device=self._device)
+        return torch.tensor(array, dtype=torch.float32, device=device)
+
+    @override
+    def load_image(self, idx: int) -> torch.Tensor:
+        return self._load_dicom(self._images[idx], self._device)
+
+    @override
+    def load_label(self, idx: int) -> torch.Tensor:
+        return self._load_dicom(self._labels[idx], self._device)
 
     @override
     def construct_new(self, images: list[str], labels: list[str]) -> Self:
-        # Note: Can't use __init__ directly, need custom construction
         instance = self.__class__.__new__(self.__class__)
         PathBasedSupervisedDataset.__init__(instance, images, labels, device=self._device)
         return instance
@@ -1392,11 +1553,12 @@ Datasets inherit from [`HasDevice`](#mipcandy.layer.HasDevice):
 
 ```python
 class MyDataset(SupervisedDataset[list[str]]):
-    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def load_image(self, idx: int) -> torch.Tensor:
         # Use self._device for automatic device placement
-        image = torch.rand(256, 256, device=self._device)
-        label = torch.randint(0, 2, (256, 256), device=self._device)
-        return image, label
+        return torch.rand(256, 256, device=self._device)
+
+    def load_label(self, idx: int) -> torch.Tensor:
+        return torch.randint(0, 2, (256, 256), device=self._device)
 
 # Device is automatically managed
 dataset = MyDataset(images, labels, device="cuda")
@@ -1407,60 +1569,32 @@ image, label = dataset[0]  # Already on CUDA
 
 Add custom transform support:
 
-```python
-from typing import Self
-
-from mipcandy.types import Transform
-
-
-class TransformableDataset(SupervisedDataset[list[str]]):
-    def __init__(
-        self,
-        images: list[str],
-        labels: list[str],
-        *,
-        image_transform: Transform | None = None,
-        label_transform: Transform | None = None,
-        device: str = "cpu"
-    ):
-        super().__init__(images, labels, device=device)
-        self.image_transform: Transform | None = image_transform
-        self.label_transform: Transform | None = label_transform
-
-    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        image = load_image(self._images[idx], device=self._device)
-        label = load_image(self._labels[idx], is_label=True, device=self._device)
-
-        # Apply transforms
-        if self.image_transform:
-            image = self.image_transform(image)
-        if self.label_transform:
-            label = self.label_transform(label)
-
-        return image, label
-
-    def construct_new(self, images: list[str], labels: list[str]) -> Self:
-        return self.__class__(
-            images,
-            labels,
-            image_transform=self.image_transform,
-            label_transform=self.label_transform,
-            device=self._device
-        )
-```
-
-**Usage:**
+All `SupervisedDataset` subclasses natively support [`JointTransform`](#mipcandy.data.transform.JointTransform) via the `transform` parameter. `JointTransform` applies transforms to both image and label (jointly or independently):
 
 ```python
-from mipcandy import Normalize
+from mipcandy import NNUNetDataset, Normalize
+from mipcandy.data.transform import JointTransform
 
+# Apply normalization to images only
 normalizer = Normalize(domain=(0, 1))
-dataset = TransformableDataset(
-    images, labels,
-    image_transform=normalizer,
+dataset = NNUNetDataset(
+    "dataset/",
+    transform=JointTransform(image_only=normalizer),
+    device="cuda"
+)
+
+# Apply a joint transform (e.g., MONAI spatial transforms on both image and label)
+dataset = NNUNetDataset(
+    "dataset/",
+    transform=JointTransform(transform=my_spatial_transform, image_only=normalizer),
     device="cuda"
 )
 ```
+
+The `JointTransform` constructor accepts:
+- `transform`: Applied jointly to `{"image": image, "label": label}` dict (for spatial augmentations)
+- `image_only`: Applied to image tensor only
+- `label_only`: Applied to label tensor only
 
 #### K-Fold Support
 
@@ -1475,8 +1609,12 @@ class MyDataset(SupervisedDataset[list[str]]):
         super().__init__(images, labels, device=device)
         self.custom_param: int = custom_param
 
-    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def load_image(self, idx: int) -> torch.Tensor:
         # ... loading logic using self.custom_param ...
+        pass
+
+    def load_label(self, idx: int) -> torch.Tensor:
+        # ... loading logic ...
         pass
 
     def construct_new(self, images: list[str], labels: list[str]) -> Self:
@@ -1515,20 +1653,18 @@ from typing import Self
 class CachedDataset(SupervisedDataset[list[str]]):
     def __init__(self, images: list[str], labels: list[str], *, device: str = "cpu"):
         super().__init__(images, labels, device=device)
-        self._cache: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        self._image_cache: dict[int, torch.Tensor] = {}
+        self._label_cache: dict[int, torch.Tensor] = {}
 
-    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        # Check cache first
-        if idx in self._cache:
-            return self._cache[idx]
+    def load_image(self, idx: int) -> torch.Tensor:
+        if idx not in self._image_cache:
+            self._image_cache[idx] = load_image(self._images[idx], device=self._device)
+        return self._image_cache[idx]
 
-        # Load if not cached
-        image = load_image(self._images[idx], device=self._device)
-        label = load_image(self._labels[idx], is_label=True, device=self._device)
-
-        # Store in cache
-        self._cache[idx] = (image, label)
-        return image, label
+    def load_label(self, idx: int) -> torch.Tensor:
+        if idx not in self._label_cache:
+            self._label_cache[idx] = load_image(self._labels[idx], is_label=True, device=self._device)
+        return self._label_cache[idx]
 
     def construct_new(self, images: list[str], labels: list[str]) -> Self:
         # Note: Cache is not shared between instances
@@ -1557,21 +1693,17 @@ class MultiModalDataset(SupervisedDataset[list[tuple[str, str, str]]]):
     ):
         super().__init__(data_tuples, labels, device=device)
 
-    def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def load_image(self, idx: int) -> torch.Tensor:
         t1_path, t2_path, flair_path = self._images[idx]
 
-        # Load all modalities
+        # Load and concatenate all modalities
         t1 = load_image(t1_path, device=self._device)
         t2 = load_image(t2_path, device=self._device)
         flair = load_image(flair_path, device=self._device)
+        return torch.cat([t1, t2, flair], dim=0)
 
-        # Concatenate channels
-        image = torch.cat([t1, t2, flair], dim=0)
-
-        # Load label
-        label = load_image(self._labels[idx], is_label=True, device=self._device)
-
-        return image, label
+    def load_label(self, idx: int) -> torch.Tensor:
+        return load_image(self._labels[idx], is_label=True, device=self._device)
 
     def construct_new(
         self,
@@ -1627,8 +1759,8 @@ Avoid loading all data in `__init__`:
 
 ```python
 # Good: Lazy loading
-def load(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-    return load_image(self._images[idx], device=self._device), ...
+def load_image(self, idx: int) -> torch.Tensor:
+    return load_image(self._images[idx], device=self._device)
 
 # Bad: Eager loading
 def __init__(self, ...):

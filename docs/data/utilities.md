@@ -12,7 +12,7 @@ The utilities module includes:
 
 ```python
 from mipcandy import (
-    load_image, save_image, resample_to_isotropic,
+    load_image, save_image, resample_to_isotropic, fast_save, fast_load, empty_cache,
     ensure_num_dimensions, orthographic_views, aggregate_orthographic_views, crop,
     convert_ids_to_logits, convert_logits_to_ids
 )
@@ -24,7 +24,8 @@ from mipcandy import (
 
 ```python
 def load_image(path: str | PathLike[str], *, is_label: bool = False,
-               align_spacing: bool = False, device: Device = "cpu") -> torch.Tensor:
+               align_spacing: bool = False, target_iso: float | None = None,
+               device: Device = "cpu") -> torch.Tensor:
 ```
 
 Load medical images from disk to PyTorch tensors.
@@ -36,6 +37,7 @@ Load medical images from disk to PyTorch tensors.
   - `True`: Uses nearest neighbor interpolation
   - `False`: Uses B-spline interpolation
 - `align_spacing`: Resample to isotropic spacing (default: `False`)
+- `target_iso`: Target isotropic spacing when `align_spacing=True` (default: `None`, uses minimum original spacing)
 - `device`: Target device (default: `"cpu"`)
 
 #### Usage
@@ -121,6 +123,81 @@ print(image_1mm.GetSpacing())  # (1.0, 1.0, 1.0)
 # Labels with nearest neighbor
 label = sitk.ReadImage("label.nii.gz")
 label_iso = resample_to_isotropic(label, interpolator=sitk.sitkNearestNeighbor)
+```
+
+### fast_save()
+
+```python
+def fast_save(x: torch.Tensor, path: str | PathLike[str]) -> None:
+```
+
+Save a tensor to disk in [safetensors](https://huggingface.co/docs/safetensors) format. The tensor is made contiguous before saving if needed.
+
+#### Parameters
+
+- `x`: Tensor to save
+- `path`: Output file path (typically `.safetensors`)
+
+#### Usage
+
+```python
+from mipcandy import fast_save
+import torch
+
+volume = torch.rand(128, 256, 256)
+fast_save(volume, "volume.safetensors")
+```
+
+### fast_load()
+
+```python
+def fast_load(path: str | PathLike[str], *, device: Device = "cpu") -> torch.Tensor:
+```
+
+Load a tensor from a safetensors file.
+
+#### Parameters
+
+- `path`: Path to the safetensors file
+- `device`: Target device (default: `"cpu"`)
+
+#### Usage
+
+```python
+from mipcandy import fast_load
+
+volume = fast_load("volume.safetensors")
+volume_gpu = fast_load("volume.safetensors", device="cuda")
+```
+
+:::{tip}
+`fast_save` / `fast_load` use the safetensors format, which is faster and safer than `torch.save` / `torch.load` (no pickle execution). Use them when you need to cache intermediate tensors to disk.
+:::
+
+### empty_cache()
+
+```python
+def empty_cache(device: Device) -> None:
+```
+
+Clear memory caches for the specified device. Dispatches to the appropriate backend:
+
+- `"cpu"`: Calls `gc.collect()`
+- `"cuda"`: Calls `torch.cuda.empty_cache()`
+- `"mps"`: Calls `torch.mps.empty_cache()`
+
+#### Parameters
+
+- `device`: Device whose cache to clear (`"cpu"`, `"cuda"`, or `"mps"`)
+
+#### Usage
+
+```python
+from mipcandy import empty_cache
+
+# After releasing large tensors
+del large_tensor
+empty_cache("cuda")
 ```
 
 ## Geometric Transformations
@@ -292,24 +369,26 @@ Convert class ID tensors to one-hot encoded logits.
 
 One-hot encoded tensor with shape `(num_classes, *spatial_dims)`
 
+**Input format:** The `ids` tensor must include a batch dimension. For `d=2`, the expected shape is `(B, H, W)`; for `d=3`, `(B, D, H, W)`. The tensor must have dtype `torch.int32`.
+
 #### Usage
 
 ```python
 from mipcandy import convert_ids_to_logits
 import torch
 
-# 2D segmentation
-ids = torch.randint(0, 3, (256, 256))
+# 2D segmentation (batch of 2, 256x256)
+ids = torch.randint(0, 3, (2, 256, 256), dtype=torch.int32)
 logits = convert_ids_to_logits(ids, d=2, num_classes=3)
-print(logits.shape)  # (3, 256, 256)
+print(logits.shape)  # (2, 3, 256, 256)
 
-# 3D segmentation
-ids_3d = torch.randint(0, 4, (64, 128, 128))
+# 3D segmentation (batch of 1, 64x128x128)
+ids_3d = torch.randint(0, 4, (1, 64, 128, 128), dtype=torch.int32)
 logits_3d = convert_ids_to_logits(ids_3d, d=3, num_classes=4)
-print(logits_3d.shape)  # (4, 64, 128, 128)
+print(logits_3d.shape)  # (1, 4, 64, 128, 128)
 
 # Verify one-hot encoding
-assert (logits.sum(dim=0) == 1).all()
+assert (logits.sum(dim=1) == 1).all()
 ```
 
 ### convert_logits_to_ids()
@@ -327,7 +406,7 @@ Convert model output logits to predicted class IDs.
 
 #### Returns
 
-Class ID tensor with dtype `torch.int32` (channel dimension removed)
+Class ID tensor. For multi-channel inputs (`C >= 2`), computes `argmax` along `channel_dim` with `keepdim=True`. For single-channel inputs (`C < 2`), rounds values and converts to `torch.int32`.
 
 #### Usage
 
@@ -335,19 +414,19 @@ Class ID tensor with dtype `torch.int32` (channel dimension removed)
 from mipcandy import convert_logits_to_ids
 import torch
 
-# 2D segmentation
+# Multi-class 2D segmentation (argmax branch)
 logits = torch.randn(1, 3, 256, 256)
 ids = convert_logits_to_ids(logits)
-print(ids.shape)  # (1, 256, 256)
-print(ids.dtype)  # torch.int32
+print(ids.shape)  # (1, 1, 256, 256) -- channel dim kept with size 1
 
-# 3D segmentation
+# Multi-class 3D segmentation
 logits_3d = torch.randn(2, 4, 64, 128, 128)
 ids_3d = convert_logits_to_ids(logits_3d)
-print(ids_3d.shape)  # (2, 64, 128, 128)
+print(ids_3d.shape)  # (2, 1, 64, 128, 128)
 
-# Custom channel dimension
-logits_nhwc = torch.randn(256, 256, 3)
-ids = convert_logits_to_ids(logits_nhwc, channel_dim=-1)
-print(ids.shape)  # (256, 256)
+# Single-channel (binary) segmentation (round branch)
+logits_binary = torch.randn(1, 1, 256, 256)
+ids_binary = convert_logits_to_ids(logits_binary)
+print(ids_binary.shape)  # (1, 1, 256, 256)
+print(ids_binary.dtype)  # torch.int32
 ```

@@ -49,8 +49,9 @@ visualize2d(overlaid, title="Prediction Overlay")
 The [`visualize2d()`](#mipcandy.data.visualization.visualize2d) function renders 2D images using Matplotlib.
 
 ```python
-def visualize2d(image: torch.Tensor, *, title: str | None = None, cmap: str = "gray",
-                blocking: bool = False, screenshot_as: str | PathLike[str] | None = None) -> None:
+def visualize2d(image: torch.Tensor, *, title: str | None = None, cmap: str | None = None,
+                is_label: bool = False, blocking: bool = False,
+                screenshot_as: str | PathLike[str] | None = None) -> None:
 ```
 
 ### Basic Usage
@@ -75,12 +76,13 @@ visualize2d(rgb_image, title="RGB Image")
   - 3D with 1 channel: `(1, H, W)` - squeezed and displayed as grayscale
   - 3D with multiple channels: `(C, H, W)` - permuted to `(H, W, C)` for RGB display
 - `title`: Optional title string
-- `cmap`: Matplotlib colormap name (default: `"gray"`)
+- `cmap`: Matplotlib colormap name (default: `None` -- resolves to `"jet"` when `is_label=True`, `"gray"` otherwise)
+- `is_label`: If `True`, treats the image as a segmentation label and defaults to the `"jet"` colormap (default: `False`)
 - `blocking`: If `True`, blocks execution until window is closed (default: `False`)
 - `screenshot_as`: Path to save the visualization as an image file
 
 :::{important}
-Input tensors are automatically normalized to [0, 255] range using [`auto_convert()`](#mipcandy.data.visualization.auto_convert).
+Input tensors are automatically normalized to [0, 255] range using [`auto_convert()`](#mipcandy.data.convertion.auto_convert).
 :::
 
 ### Colormap Options
@@ -136,8 +138,11 @@ visualize2d(volume)  # Uses first depth slice
 The [`visualize3d()`](#mipcandy.data.visualization.visualize3d) function renders 3D volumes with interactive viewing.
 
 ```python
-def visualize3d(image: torch.Tensor, *, title: str | None = None, cmap: str = "gray", max_volume: int = 1e6,
-                backend: Literal["auto", "matplotlib", "pyvista"] = "auto", blocking: bool = False,
+def visualize3d(image: torch.Tensor, *, title: str | None = None,
+                cmap: str | list[str] | None = None, max_volume: int = 1e6,
+                is_label: bool = False,
+                backend: Literal["auto", "matplotlib", "pyvista"] = "auto",
+                blocking: bool = False,
                 screenshot_as: str | PathLike[str] | None = None) -> None:
 ```
 
@@ -189,9 +194,13 @@ Using Matplotlib backend for 3D visualization is inefficient and inaccurate. Con
   - 3D: `(D, H, W)` - displayed as volume
   - Higher dimensions: automatically reduced to 3D using [`ensure_num_dimensions()`](#mipcandy.data.geometric.ensure_num_dimensions)
 - `title`: Optional title string
-- `cmap`: Colormap name (default: `"gray"`)
+- `cmap`: Colormap name or list of hex color strings (default: `None` -- resolves to `"gray"` for images; for labels with the PyVista backend and fewer than 16 classes, a built-in hex colormap is used, otherwise `"jet"`)
 - `max_volume`: Maximum number of voxels (default: `1e6`)
   - Volumes larger than this are downsampled using 3D average pooling
+- `is_label`: If `True`, treats the volume as a segmentation label and selects an appropriate colormap (default: `False`)
+  - With PyVista backend and fewer than 16 classes, uses a built-in discrete hex colormap
+  - Otherwise defaults to `"jet"`
+  - Label tensors with `max > 1` must be of integer type
 - `backend`: Backend selection: `"auto"`, `"matplotlib"`, or `"pyvista"` (default: `"auto"`)
 - `blocking`: If `True`, blocks execution until window is closed (default: `False`)
 - `screenshot_as`: Path to save the visualization
@@ -281,7 +290,7 @@ visualize2d(overlaid)
 - `max_label_opacity`: Maximum opacity for labels (default: `0.5`)
   - Range: 0.0 (transparent) to 1.0 (opaque)
 - `label_colorizer`: Optional [`ColorizeLabel`](#mipcandy.common.module.preprocess.ColorizeLabel) instance
-  - Default: `ColorizeLabel()` with automatic colormap
+  - Default: `ColorizeLabel(batch=False)` with automatic colormap
   - Set to `None` to use grayscale labels
 
 ### Opacity Control
@@ -385,7 +394,7 @@ When label values are in [0, 1] range, [`ColorizeLabel`](#mipcandy.common.module
 def auto_convert(image: torch.Tensor) -> torch.Tensor:
 ```
 
-The [`auto_convert()`](#mipcandy.data.visualization.auto_convert) function normalizes tensors to [0, 255] integer range for display.
+The [`auto_convert()`](#mipcandy.data.convertion.auto_convert) function normalizes tensors to [0, 255] integer range for display. It is defined in `mipcandy.data.convertion` and re-exported from `mipcandy.data`.
 
 ```python
 from mipcandy import auto_convert
