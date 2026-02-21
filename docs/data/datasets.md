@@ -550,6 +550,22 @@ image, label = composed[len(dataset_a)]  # From dataset_b
 - Each base dataset retains its own transforms and loading logic
 - The `load()` method delegates to the correct base dataset's `load()` method
 
+Multi-center study:
+```python
+from mipcandy import NNUNetDataset, ComposeDataset
+from torch.utils.data import DataLoader
+
+# Datasets from multiple centers
+centers = ["center_1", "center_2", "center_3", "center_4"]
+datasets = [NNUNetDataset(f"{c}/", device="cuda") for c in centers]
+
+# Compose all centers
+full_dataset = ComposeDataset(datasets, device="cuda")
+
+# Use with DataLoader
+loader = DataLoader(full_dataset, batch_size=8, shuffle=True)
+```
+
 :::{note}
 `ComposeDataset` inherits from `_AbstractDataset` directly (not from `SupervisedDataset` or `UnsupervisedDataset`), so it does not support `fold()` or `construct_new()`. Fold individual datasets before composing them.
 :::
@@ -632,7 +648,8 @@ print(len(val))    # ~20% of dataset
 Splits dataset sequentially into 5 equal parts:
 
 ```python
-from mipcandy import NNUNetDataset, OrderedKFPicker
+from mipcandy import NNUNetDataset
+from mipcandy.data.dataset import OrderedKFPicker
 
 dataset = NNUNetDataset("dataset/", device="cuda")
 
@@ -658,7 +675,8 @@ train, val = dataset.fold(fold=0, picker=OrderedKFPicker)
 Randomly samples validation indices:
 
 ```python
-from mipcandy import NNUNetDataset, RandomKFPicker
+from mipcandy import NNUNetDataset
+from mipcandy.data.dataset import RandomKFPicker
 
 dataset = NNUNetDataset("dataset/", device="cuda")
 
@@ -862,7 +880,7 @@ Medical images often have:
 The [`inspect()`](#mipcandy.data.inspection.inspect) function automatically analyzes a dataset:
 
 ```python
-def inspect(dataset: SupervisedDataset, *, background: int = 0) -> InspectionAnnotations:
+def inspect(dataset: SupervisedDataset, *, background: int = 0, console: Console = Console()) -> InspectionAnnotations:
 ```
 
 ```python
@@ -880,6 +898,7 @@ print(f"Inspected {len(annotations)} cases")
 **Parameters:**
 - `dataset`: Any [`SupervisedDataset`](#mipcandy.data.dataset.SupervisedDataset)
 - `background`: Background class ID (default: `0`)
+- `console`: Rich console for progress display (default: `Console()`)
 
 **Returns:** [`InspectionAnnotations`](#mipcandy.data.inspection.InspectionAnnotations) object
 
@@ -1236,7 +1255,7 @@ Save inspection results to avoid re-computation. Annotations are stored in JSON 
 ```python
 from mipcandy import inspect, NNUNetDataset, load_inspection_annotations
 
-# Inspect and save
+# Inspect and save (JSON format)
 dataset = NNUNetDataset("dataset/", device="cuda")
 annotations = inspect(dataset)
 annotations.save("annotations.json")
@@ -1244,6 +1263,10 @@ annotations.save("annotations.json")
 # Load later (requires dataset reference)
 annotations = load_inspection_annotations("annotations.json", dataset)
 ```
+
+:::{note}
+Annotations are saved in JSON format (not CSV). The `load_inspection_annotations()` function requires the original dataset as a parameter to properly reconstruct the annotations with data access capability.
+:::
 
 ### Complete Patch-based Training Example
 
