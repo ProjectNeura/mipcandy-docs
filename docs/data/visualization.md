@@ -194,7 +194,7 @@ Using Matplotlib backend for 3D visualization is inefficient and inaccurate. Con
   - 3D: `(D, H, W)` - displayed as volume
   - Higher dimensions: automatically reduced to 3D using [`ensure_num_dimensions()`](#mipcandy.data.geometric.ensure_num_dimensions)
 - `title`: Optional title string
-- `cmap`: Colormap name or list of hex color strings (default: `None` -- resolves to `"gray"` for images; for labels with the PyVista backend and fewer than 16 classes, a built-in hex colormap is used, otherwise `"jet"`)
+- `cmap`: Colormap name or list of hex color strings (default: `None` -- resolves to `"binary"` for images; for labels with the PyVista backend and fewer than 16 classes, a built-in hex colormap is used, otherwise `"jet"`)
 - `max_volume`: Maximum number of voxels (default: `1e6`)
   - Volumes larger than this are downsampled using 3D average pooling
 - `is_label`: If `True`, treats the volume as a segmentation label and selects an appropriate colormap (default: `False`)

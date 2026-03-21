@@ -307,6 +307,10 @@ dataset/
 - `transform`: Optional [`JointTransform`](#mipcandy.data.transform.JointTransform) for joint image-label transformation
 - `device`: Device placement, default: `"cpu"`
 
+**Methods:**
+
+- `folder() -> str`: Returns the dataset root directory path.
+
 **Examples:**
 
 Basic usage:
@@ -316,6 +320,9 @@ from mipcandy import NNUNetDataset
 # Single modality dataset
 dataset = NNUNetDataset("dataset/", device="cuda")
 image, label = dataset[0]  # (C, H, W) or (C, D, H, W)
+
+# Access dataset root folder
+print(dataset.folder())  # "dataset/"
 ```
 
 Multimodal dataset:
@@ -905,7 +912,7 @@ print(f"Inspected {len(annotations)} cases")
 **What it computes:**
 
 For each case:
-- Image shape
+- Image shape (raises `ValueError` if image and label shapes differ)
 - Foreground bounding box (minimal box containing all non-background voxels)
 - Unique foreground class IDs present in the label
 - Per-class voxel counts, bounding boxes, and sampled voxel locations
@@ -999,6 +1006,16 @@ print(f"Foreground height range: {min(fg_heights)} - {max(fg_heights)}")
 print(f"Foreground width range: {min(fg_widths)} - {max(fg_widths)}")
 ```
 
+**Statistical shape:**
+
+Compute representative image size using percentile:
+
+```python
+# 95th percentile overall image shape (default)
+stat_shape = annotations.statistical_shape(percentile=0.95)
+print(f"95th percentile shape: {stat_shape}")
+```
+
 **Statistical foreground shape:**
 
 Compute representative foreground size using percentile:
@@ -1013,7 +1030,7 @@ stat_shape_99 = annotations.statistical_foreground_shape(percentile=0.99)
 print(f"99th percentile foreground: {stat_shape_99}")
 ```
 
-This is useful for determining patch size that covers most foregrounds.
+These are useful for determining patch size. `statistical_shape()` uses the overall image dimensions, while `statistical_foreground_shape()` uses only the foreground bounding box dimensions.
 
 **Foreground heatmap:**
 
@@ -1227,7 +1244,7 @@ for images, labels in loader:
 
 **Behavior:**
 
-- Computes ROI shape from the statistical foreground shape at the given percentile, rounded up to the nearest multiple of `min_factor`
+- Computes ROI shape from the statistical overall image shape at the given percentile, rounded up to the nearest multiple of `min_factor`
 - Each `__getitem__` call randomly places a patch within the image bounds
 - When oversampling is triggered (based on `oversample_rate` and index within the batch), a random foreground class and voxel are selected, and the patch is centered around that voxel
 - Patches that extend beyond the image boundary are padded with zeros via `crop_and_pad()`
@@ -1619,6 +1636,17 @@ The `JointTransform` constructor accepts:
 - `transform`: Applied jointly to `{"image": image, "label": label}` dict (for spatial augmentations)
 - `image_only`: Applied to image tensor only
 - `label_only`: Applied to label tensor only
+- `keys`: Tuple of key names for the dict-based transform (default: `("image", "label")`)
+- `order`: Tuple of three `_Order` literals controlling the execution order (default: `("transform", "image_only", "label_only")`). Each element is one of `"transform"`, `"image_only"`, or `"label_only"`.
+
+```python
+# Custom execution order: apply image-only first, then joint transform
+transform = JointTransform(
+    transform=my_spatial_transform,
+    image_only=normalizer,
+    order=("image_only", "transform", "label_only")
+)
+```
 
 #### K-Fold Support
 
