@@ -98,4 +98,4 @@ class Frontend:
     def on_experiment_interrupted(self, experiment_id, error) -> None: ...
 ```
 
-Secrets are passed to the constructor as a `Settings` dict. Use `require_nonempty_secret(entry, *, required_type)` within your frontend to validate required configuration.
+Secrets are passed to the constructor as a `Settings` dict. Use `require_nonempty_secret(entry, *, required_type=)` within your frontend to validate required configuration.

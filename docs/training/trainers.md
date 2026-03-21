@@ -375,28 +375,49 @@ class SegmentationTrainer(Trainer, metaclass=ABCMeta):
 - **Gradient Clipping**: `clip_grad_norm_` with max norm of `12`
 - **Preview Generation**: Automatic 2D/3D visualization with overlays
 
+### Loss Classes
+
+All segmentation loss functions inherit from [`Loss`](#mipcandy.common.optim.loss.Loss), which provides a `validation_mode` property. When set, the setter automatically propagates the value to all child `Loss` modules. [`SegmentationLoss`](#mipcandy.common.optim.loss.SegmentationLoss) extends `Loss` with `logitfy_no_grad()` for automatic ID-to-logit conversion.
+
+```python
+from mipcandy.common import Loss, SegmentationLoss
+```
+
 ### DiceBCELossWithLogits
 
-The default loss function supports both binary and multiclass segmentation:
+Binary segmentation loss combining Dice and BCE:
 
 **Parameters:**
-- `num_classes`: Number of output classes (1 for binary, >1 for multiclass)
-- `lambda_bce`: Weight for BCE loss (default: `0.5`)
-- `lambda_soft_dice`: Weight for Dice loss (default: `1.0`)
+- `lambda_bce`: Weight for BCE loss (default: `1`)
+- `lambda_soft_dice`: Weight for Dice loss (default: `1`)
 - `smooth`: Smoothing constant for Dice (default: `1e-5`)
-- `include_bg`: Include background in Dice computation (default: `True`)
 
-**Binary segmentation:**
+In validation mode, additionally computes `binary_dice` on thresholded outputs.
+
 ```python
 from mipcandy import DiceBCELossWithLogits
 
-criterion = DiceBCELossWithLogits(num_classes=1)
+criterion = DiceBCELossWithLogits()
 # labels: (B, 1, H, W) float tensor
 ```
 
-**Multiclass segmentation:**
+### DiceCELossWithLogits
+
+Multiclass segmentation loss combining Dice and Cross Entropy:
+
+**Parameters:**
+- `num_classes`: Number of output classes
+- `lambda_ce`: Weight for CE loss (default: `1`)
+- `lambda_soft_dice`: Weight for Dice loss (default: `1`)
+- `smooth`: Smoothing constant for Dice (default: `1e-5`)
+- `include_background`: Include background in Dice computation (default: `True`)
+
+In validation mode, additionally computes per-class `binary_dice` and overall `dice_similarity_coefficient`.
+
 ```python
-criterion = DiceBCELossWithLogits(num_classes=4)
+from mipcandy import DiceCELossWithLogits
+
+criterion = DiceCELossWithLogits(num_classes=4, include_background=False)
 
 # Supports two label formats:
 # 1. One-hot encoded: (B, num_classes, H, W) float tensor
@@ -433,7 +454,7 @@ The `class_percentages()` method computes the distribution of class labels in a 
 
 ```python
 def class_percentages(self, ids: torch.Tensor) -> dict[int, float]:
-    bin_count = torch.bincount(ids.flatten().long(), minlength=self.num_classes)
+    bin_count = torch.bincount(ids.flatten(), minlength=self.num_classes)
     distribution = (bin_count / bin_count.sum()).cpu().tolist()
     return dict(enumerate(distribution))
 ```
@@ -452,7 +473,7 @@ from mipcandy.presets.segmentation import SegmentationTrainer
 
 class MySegTrainer(SegmentationTrainer):
     num_classes: int = 3  # Multi-class segmentation
-    include_bg: bool = False  # Exclude background from Dice computation
+    include_background: bool = False  # Exclude background from Dice computation
 
     @override
     def build_network(self, example_shape: tuple[int, ...]) -> nn.Module:
@@ -471,6 +492,8 @@ The loss function is automatically selected based on `num_classes`:
 @override
 def build_criterion(self) -> nn.Module:
     if self.num_classes < 2:
+        if not self.include_background:
+            raise ValueError("Binary segmentation models must include background class")
         loss = DiceBCELossWithLogits()          # Binary: Dice + BCE
     else:
         loss = DiceCELossWithLogits(             # Multiclass: Dice + CE
@@ -482,14 +505,14 @@ def build_criterion(self) -> nn.Module:
 
 ## Deep Supervision
 
-[`DeepSupervisionWrapper`](#mipcandy.presets.segmentation.DeepSupervisionWrapper) is an `nn.Module` that wraps a loss function to support multi-scale supervision during training.
+[`DeepSupervisionWrapper`](#mipcandy.presets.segmentation.DeepSupervisionWrapper) extends [`Loss`](#mipcandy.common.optim.loss.Loss) and wraps a loss function to support multi-scale supervision during training.
 
 ### How It Works
 
 Deep supervision computes the loss at multiple resolutions. The model produces outputs at several scales, and the ground truth labels are downsampled to match each scale. The final loss is a weighted sum across all scales.
 
 ```python
-class DeepSupervisionWrapper(nn.Module):
+class DeepSupervisionWrapper(Loss):
     def __init__(self, loss: nn.Module, *, weight_factors: Sequence[float] | None = None) -> None:
         ...
 
@@ -815,6 +838,30 @@ This sets seeds for:
 - PyTorch CUDA random
 - Python random
 - PYTHONHASHSEED environment variable
+
+### Sanity Check
+
+The `sanity_check()` method validates the model before training by running a forward pass with a template input:
+
+```python
+from mipcandy.sanity_check import SanityCheckResult
+
+result: SanityCheckResult = trainer.sanity_check(template_model, example_shape)
+# Returns MACs, parameter count, and example output info
+# The template_model is automatically deleted after the check
+```
+
+### Profiler Memory Diagnostics
+
+When the profiler is enabled (`profiler=True`), the `record_profiler_allocated_tensors()` method logs a diff of all live tensors between calls, helping diagnose memory leaks:
+
+```python
+trainer = MyTrainer("experiments", train_loader, val_loader, device="cuda", profiler=True)
+# During training, the trainer automatically calls record_profiler_allocated_tensors()
+# after each training epoch and after recovery saves
+```
+
+The profiler output includes added/removed tensors with their sizes, shapes, and gradient status. See [`dump_allocated_tensors()`](../data/utilities.md#dump_allocated_tensors) for the underlying utility.
 
 ### Device Management
 

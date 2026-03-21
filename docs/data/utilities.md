@@ -13,6 +13,7 @@ The utilities module includes:
 ```python
 from mipcandy import (
     load_image, save_image, resample_to_isotropic, fast_save, fast_load, empty_cache,
+    dump_allocated_tensors,
     ensure_num_dimensions, orthographic_views, aggregate_orthographic_views, crop,
     convert_ids_to_logits, convert_logits_to_ids
 )
@@ -200,6 +201,38 @@ del large_tensor
 empty_cache("cuda")
 ```
 
+### dump_allocated_tensors()
+
+```python
+def dump_allocated_tensors() -> tuple[float, list[tuple[
+    float, AmbiguousShape, torch.dtype, torch.device, bool, str]]]
+```
+
+Inspect all live `torch.Tensor` objects tracked by the garbage collector. Returns the total memory usage and a per-tensor breakdown sorted by size (largest first).
+
+#### Returns
+
+A tuple of `(total_MB, entries)` where each entry is `(size_MB, shape, dtype, device, requires_grad, grad_fn)`.
+
+#### Usage
+
+```python
+from mipcandy import dump_allocated_tensors
+import torch
+
+a = torch.randn(1024, 1024)
+b = torch.randn(512, 512, device="cuda")
+
+total_mb, tensors = dump_allocated_tensors()
+print(f"Total: {total_mb:.1f} MB, {len(tensors)} tensors")
+for sz, shape, dtype, device, grad, fn in tensors[:5]:
+    print(f"  {sz:.1f} MB | {shape} | {dtype} | {device}")
+```
+
+:::{tip}
+Use `dump_allocated_tensors` together with [`Profiler.record_allocated_tensors()`](#mipcandy.profiler.Profiler.record_allocated_tensors) to track memory leaks across training epochs.
+:::
+
 ## Geometric Transformations
 
 ### ensure_num_dimensions()
@@ -360,22 +393,20 @@ print(cropped.shape)  # (1, 1, 80, 150, 160)
 ### convert_ids_to_logits()
 
 ```python
-def convert_ids_to_logits(ids: torch.Tensor, d: Literal[1, 2, 3], num_classes: int) -> torch.Tensor:
+def convert_ids_to_logits(ids: torch.Tensor, num_classes: int, *, channel_dim: int = 1) -> torch.Tensor:
 ```
 
-Convert class ID tensors to one-hot encoded logits.
+Convert class ID tensors to one-hot encoded logits using `scatter_`.
 
 #### Parameters
 
-- `ids`: Class ID tensor (integer type, non-negative values)
-- `d`: Spatial dimensionality - `1`, `2`, or `3`
+- `ids`: Class ID tensor (non-negative integers). Must not be floating point. Shape `(..., 1, ...)` where the singleton dimension at `channel_dim` will be expanded to `num_classes`.
 - `num_classes`: Number of classes
+- `channel_dim`: Index of the channel dimension to expand (default: `1`)
 
 #### Returns
 
-One-hot encoded tensor with shape `(B, num_classes, *spatial_dims)`
-
-**Input format:** The `ids` tensor must include a batch dimension. For `d=2`, the expected shape is `(B, H, W)`; for `d=3`, `(B, D, H, W)`. The tensor must have dtype `torch.int32`.
+One-hot encoded `float32` tensor with the channel dimension expanded to `num_classes`.
 
 #### Usage
 
@@ -383,15 +414,20 @@ One-hot encoded tensor with shape `(B, num_classes, *spatial_dims)`
 from mipcandy import convert_ids_to_logits
 import torch
 
-# 2D segmentation (batch of 2, 256x256)
-ids = torch.randint(0, 3, (2, 256, 256), dtype=torch.int32)
-logits = convert_ids_to_logits(ids, d=2, num_classes=3)
+# 2D segmentation (batch of 2, 1 channel, 256x256)
+ids = torch.randint(0, 3, (2, 1, 256, 256))
+logits = convert_ids_to_logits(ids, num_classes=3)
 print(logits.shape)  # (2, 3, 256, 256)
 
-# 3D segmentation (batch of 1, 64x128x128)
-ids_3d = torch.randint(0, 4, (1, 64, 128, 128), dtype=torch.int32)
-logits_3d = convert_ids_to_logits(ids_3d, d=3, num_classes=4)
+# 3D segmentation (batch of 1, 1 channel, 64x128x128)
+ids_3d = torch.randint(0, 4, (1, 1, 64, 128, 128))
+logits_3d = convert_ids_to_logits(ids_3d, num_classes=4)
 print(logits_3d.shape)  # (1, 4, 64, 128, 128)
+
+# Custom channel dimension
+ids_ch0 = torch.randint(0, 3, (1, 256, 256))
+logits_ch0 = convert_ids_to_logits(ids_ch0, num_classes=3, channel_dim=0)
+print(logits_ch0.shape)  # (3, 256, 256)
 
 # Verify one-hot encoding
 assert (logits.sum(dim=1) == 1).all()
